@@ -12,6 +12,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import com.sonytimer.shutter.android.AndroidFeedbackPlayer
 import com.sonytimer.shutter.android.AndroidSonyBleController
+import com.sonytimer.shutter.android.AndroidSonyLiveViewController
 import com.sonytimer.shutter.android.AndroidTimerPreferences
 import com.sonytimer.shutter.controller.ShutterTimerViewModel
 import kotlinx.coroutines.CoroutineScope
@@ -45,12 +46,14 @@ class MainActivity : ComponentActivity() {
             hasBlePermissions = ::hasRequiredBlePermissions,
             onPermissionsMissing = ::requestBlePermissions
         )
+        val liveViewController = AndroidSonyLiveViewController(context = this)
         val feedbackPlayer = AndroidFeedbackPlayer(this)
         val preferences = AndroidTimerPreferences(this)
 
         viewModel = ShutterTimerViewModel(
             scope = appScope,
             bleController = bleController,
+            liveViewController = liveViewController,
             feedbackPlayer = feedbackPlayer,
             preferences = preferences
         )

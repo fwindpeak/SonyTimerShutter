@@ -22,6 +22,7 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sonytimer.shutter.controller.BleConnectionState
@@ -33,33 +34,34 @@ import com.sonytimer.shutter.controller.BleConnectionState
 fun BluetoothStatusBar(
     connectionState: BleConnectionState,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    compact: Boolean = false
 ) {
     val (dotColor, iconColor, label) = when (connectionState) {
         is BleConnectionState.Connected -> Triple(
             Color(0xFF34D399),
             Color(0xFF6EE7B7),
-            "已连接 · ${connectionState.cameraName}"
+            if (compact) connectionState.cameraName else "已连接 · ${connectionState.cameraName}"
         )
         is BleConnectionState.Connecting -> Triple(
             Color(0xFFF59E0B),
             Color(0xFFFCD34D),
-            "连接中 · ${connectionState.cameraName}"
+            if (compact) "连接中..." else "连接中 · ${connectionState.cameraName}"
         )
         is BleConnectionState.Pairing -> Triple(
             Color(0xFFF59E0B),
             Color(0xFFFCD34D),
-            "请在相机屏幕确认配对..."
+            if (compact) "配对中..." else "请在相机屏幕确认配对..."
         )
         is BleConnectionState.Error -> Triple(
             Color(0xFFEF4444),
             Color(0xFFFCA5A5),
-            connectionState.message
+            if (compact) "蓝牙异常" else connectionState.message
         )
         is BleConnectionState.Disconnected -> Triple(
             Color(0xFF6B7280),
             Color(0xFF9CA3AF),
-            "未连接索尼相机 · 点击配对"
+            if (compact) "蓝牙快门" else "未连接相机 · 蓝牙"
         )
     }
 
@@ -69,9 +71,9 @@ fun BluetoothStatusBar(
             .background(Color(0xFF1C1F24).copy(alpha = 0.85f))
             .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(999.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = if (compact) 14.dp else 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         // 状态灯圆点
         Canvas(modifier = Modifier.size(8.dp)) {
@@ -107,7 +109,9 @@ fun BluetoothStatusBar(
             color = Color(0xFFE5E7EB),
             fontSize = 13.sp,
             fontWeight = FontWeight.Medium,
-            fontFamily = FontFamily.Monospace
+            fontFamily = FontFamily.Monospace,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }

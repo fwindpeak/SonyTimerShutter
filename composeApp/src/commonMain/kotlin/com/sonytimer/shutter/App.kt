@@ -6,7 +6,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -28,14 +30,24 @@ import com.sonytimer.shutter.controller.ShutterTimerViewModel
 import com.sonytimer.shutter.ui.BluetoothStatusBar
 import com.sonytimer.shutter.ui.CameraPickerSheet
 import com.sonytimer.shutter.ui.IndustrialMechanicalButton
+import com.sonytimer.shutter.ui.KeepScreenOnEffect
+import com.sonytimer.shutter.ui.LiveViewPreviewCard
+import com.sonytimer.shutter.ui.LiveViewStatusPill
 import com.sonytimer.shutter.ui.TimerConfigBar
 import com.sonytimer.shutter.ui.TimerSettingsSheet
+import com.sonytimer.shutter.ui.WifiPreviewSheet
 
 @Composable
 fun SonyTimerShutterApp(
     viewModel: ShutterTimerViewModel
 ) {
     val uiState by viewModel.uiState.collectAsState()
+
+    KeepScreenOnEffect(
+        enabled = uiState.isWifiConnected ||
+            uiState.phase is ShutterPhase.CountingDown ||
+            uiState.phase is ShutterPhase.Triggering
+    )
 
     MaterialTheme(
         colorScheme = darkColorScheme(
@@ -53,58 +65,73 @@ fun SonyTimerShutterApp(
                 )
                 .safeDrawingPadding()
         ) {
-            // 顶部：克制的蓝牙状态图标 + 文字提醒
-            BluetoothStatusBar(
-                connectionState = uiState.connectionState,
-                onClick = viewModel::openCameraPicker,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 24.dp)
-            )
-
-            // 屏幕正中：唯一明显的视觉主体 —— 工业感复古机械大按钮（纯快门按键）
-            IndustrialMechanicalButton(
-                connectionState = uiState.connectionState,
-                phase = uiState.phase,
-                configuredSeconds = uiState.configuredSeconds,
-                onClick = viewModel::onMainButtonClick,
-                modifier = Modifier.align(Alignment.Center)
-            )
-
-            // 底部区域：临时反馈提示 + 极简拍摄参数胶囊（与顶部蓝牙条上下对称）
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 28.dp)
-            ) {
-                Box(
-                    modifier = Modifier.height(22.dp),
-                    contentAlignment = Alignment.Center
+            if (uiState.isWifiConnected) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    androidx.compose.animation.AnimatedVisibility(
-                        visible = uiState.statusHint != null,
-                        enter = fadeIn(),
-                        exit = fadeOut()
-                    ) {
-                        Text(
-                            text = uiState.statusHint.orEmpty(),
-                            color = Color(0xFFD1D5DB),
-                            fontSize = 13.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
-                }
+                    TopStatusRow(
+                        uiState = uiState,
+                        onBleClick = viewModel::openCameraPicker,
+                        onWifiClick = viewModel::openWifiSheet,
+                        modifier = Modifier.padding(top = 16.dp, bottom = 12.dp)
+                    )
 
-                TimerConfigBar(
+                    LiveViewPreviewCard(
+                        frame = uiState.liveViewFrame,
+                        fps = uiState.liveViewFps,
+                        isMirrored = uiState.isPreviewMirrored,
+                        phase = uiState.phase,
+                        onToggleMirror = viewModel::togglePreviewMirror,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                    )
+
+                    IndustrialMechanicalButton(
+                        connectionState = uiState.connectionState,
+                        isWifiConnected = true,
+                        phase = uiState.phase,
+                        configuredSeconds = uiState.configuredSeconds,
+                        onClick = viewModel::onMainButtonClick,
+                        buttonSize = 184.dp,
+                        modifier = Modifier.padding(vertical = 12.dp)
+                    )
+
+                    BottomControls(
+                        uiState = uiState,
+                        onOpenTimerSheet = viewModel::openTimerSheet,
+                        modifier = Modifier.padding(bottom = 20.dp)
+                    )
+                }
+            } else {
+                TopStatusRow(
+                    uiState = uiState,
+                    onBleClick = viewModel::openCameraPicker,
+                    onWifiClick = viewModel::openWifiSheet,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 24.dp, start = 16.dp, end = 16.dp)
+                )
+
+                // 屏幕正中：工业感复古机械大按钮（纯快门按键）
+                IndustrialMechanicalButton(
+                    connectionState = uiState.connectionState,
+                    isWifiConnected = false,
+                    phase = uiState.phase,
                     configuredSeconds = uiState.configuredSeconds,
-                    burstEnabled = uiState.burstEnabled,
-                    burstCount = uiState.burstCount,
-                    burstIntervalSeconds = uiState.burstIntervalSeconds,
-                    enabled = uiState.phase !is ShutterPhase.CountingDown &&
-                        uiState.phase !is ShutterPhase.Triggering,
-                    onClick = viewModel::openTimerSheet
+                    onClick = viewModel::onMainButtonClick,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+
+                BottomControls(
+                    uiState = uiState,
+                    onOpenTimerSheet = viewModel::openTimerSheet,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 28.dp)
                 )
             }
 
@@ -135,6 +162,84 @@ fun SonyTimerShutterApp(
                     onDismiss = viewModel::dismissCameraPicker
                 )
             }
+
+            // 索尼相机 Wi-Fi 实时预览配置弹窗
+            if (uiState.showWifiSheet) {
+                WifiPreviewSheet(
+                    liveViewState = uiState.liveViewState,
+                    initialConfig = uiState.wifiConfig,
+                    detectedGatewayIp = uiState.detectedGatewayIp,
+                    onConnect = viewModel::connectWifi,
+                    onDisconnect = viewModel::disconnectWifi,
+                    onDismiss = viewModel::dismissWifiSheet
+                )
+            }
         }
+    }
+}
+
+@Composable
+private fun TopStatusRow(
+    uiState: com.sonytimer.shutter.controller.ShutterUiState,
+    onBleClick: () -> Unit,
+    onWifiClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        BluetoothStatusBar(
+            connectionState = uiState.connectionState,
+            onClick = onBleClick,
+            compact = true,
+            modifier = Modifier.weight(1f, fill = false)
+        )
+        LiveViewStatusPill(
+            liveViewState = uiState.liveViewState,
+            onClick = onWifiClick
+        )
+    }
+}
+
+@Composable
+private fun BottomControls(
+    uiState: com.sonytimer.shutter.controller.ShutterUiState,
+    onOpenTimerSheet: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = modifier
+    ) {
+        Box(
+            modifier = Modifier.height(22.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            androidx.compose.animation.AnimatedVisibility(
+                visible = uiState.statusHint != null,
+                enter = fadeIn(),
+                exit = fadeOut()
+            ) {
+                Text(
+                    text = uiState.statusHint.orEmpty(),
+                    color = Color(0xFFD1D5DB),
+                    fontSize = 13.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+        }
+
+        TimerConfigBar(
+            configuredSeconds = uiState.configuredSeconds,
+            burstEnabled = uiState.burstEnabled,
+            burstCount = uiState.burstCount,
+            burstIntervalSeconds = uiState.burstIntervalSeconds,
+            enabled = uiState.phase !is ShutterPhase.CountingDown &&
+                uiState.phase !is ShutterPhase.Triggering,
+            onClick = onOpenTimerSheet
+        )
     }
 }

@@ -1,5 +1,6 @@
 package com.sonytimer.shutter.controller
 
+import androidx.compose.ui.graphics.ImageBitmap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -28,6 +29,30 @@ sealed interface ShutterPhase {
     ) : ShutterPhase
 }
 
+private data class TimerConfigSnapshot(
+    val configuredSeconds: Int,
+    val burstEnabled: Boolean,
+    val burstCount: Int,
+    val burstIntervalSeconds: Int
+)
+
+private data class BleSnapshot(
+    val connectionState: BleConnectionState,
+    val discoveredCameras: List<DiscoveredCamera>,
+    val isScanning: Boolean,
+    val showCameraPicker: Boolean
+)
+
+private data class LiveViewSnapshot(
+    val liveViewState: LiveViewConnectionState,
+    val liveViewFrame: ImageBitmap?,
+    val liveViewFps: Int,
+    val isPreviewMirrored: Boolean,
+    val showWifiSheet: Boolean,
+    val wifiConfig: WifiCameraConfig,
+    val detectedGatewayIp: String?
+)
+
 data class ShutterUiState(
     val connectionState: BleConnectionState = BleConnectionState.Disconnected,
     val phase: ShutterPhase = ShutterPhase.Idle,
@@ -39,12 +64,29 @@ data class ShutterUiState(
     val showTimerSheet: Boolean = false,
     val discoveredCameras: List<DiscoveredCamera> = emptyList(),
     val isScanning: Boolean = false,
-    val statusHint: String? = null
-)
+    val statusHint: String? = null,
+    val liveViewState: LiveViewConnectionState = LiveViewConnectionState.Disconnected,
+    val liveViewFrame: ImageBitmap? = null,
+    val liveViewFps: Int = 0,
+    val isPreviewMirrored: Boolean = false,
+    val showWifiSheet: Boolean = false,
+    val wifiConfig: WifiCameraConfig = WifiCameraConfig(),
+    val detectedGatewayIp: String? = null
+) {
+    val isBleConnected: Boolean
+        get() = connectionState is BleConnectionState.Connected
+
+    val isWifiConnected: Boolean
+        get() = liveViewState is LiveViewConnectionState.Connected
+
+    val isAnyCameraConnected: Boolean
+        get() = isBleConnected || isWifiConnected
+}
 
 class ShutterTimerViewModel(
     private val scope: CoroutineScope,
     private val bleController: CameraBleController,
+    private val liveViewController: CameraLiveViewController,
     private val feedbackPlayer: FeedbackPlayer,
     private val preferences: TimerPreferences
 ) {
@@ -66,36 +108,111 @@ class ShutterTimerViewModel(
     private val showTimerSheetFlow = MutableStateFlow(false)
     private val statusHintFlow = MutableStateFlow<String?>(null)
 
+    private val isPreviewMirroredFlow = MutableStateFlow(
+        preferences.isPreviewMirrored(defaultValue = false)
+    )
+    private val showWifiSheetFlow = MutableStateFlow(false)
+    private val wifiConfigFlow = MutableStateFlow(
+        WifiCameraConfig(
+            host = preferences.getWifiHost(),
+            useSsh = preferences.isWifiUseSsh(),
+            sshUsername = preferences.getWifiSshUsername(),
+            sshPassword = preferences.getWifiSshPassword()
+        )
+    )
+    private val detectedGatewayIpFlow = MutableStateFlow<String?>(null)
+
     private var countdownJob: Job? = null
     private var hintJob: Job? = null
     private var cancelBurstAfterCurrentShot = false
 
-    val uiState: StateFlow<ShutterUiState> = combine(
-        bleController.connectionState,
-        phaseFlow,
+    private val timerConfigFlow = combine(
         configuredSecondsFlow,
         burstEnabledFlow,
         burstCountFlow,
-        burstIntervalSecondsFlow,
-        showCameraPickerFlow,
-        showTimerSheetFlow,
+        burstIntervalSecondsFlow
+    ) { seconds, burstEnabled, burstCount, burstInterval ->
+        TimerConfigSnapshot(
+            configuredSeconds = seconds,
+            burstEnabled = burstEnabled,
+            burstCount = burstCount,
+            burstIntervalSeconds = burstInterval
+        )
+    }
+
+    private val bleSnapshotFlow = combine(
+        bleController.connectionState,
         bleController.discoveredCameras,
         bleController.isScanning,
-        statusHintFlow
+        showCameraPickerFlow
+    ) { conn, cameras, scanning, showPicker ->
+        BleSnapshot(
+            connectionState = conn,
+            discoveredCameras = cameras,
+            isScanning = scanning,
+            showCameraPicker = showPicker
+        )
+    }
+
+    private val liveViewMetaFlow = combine(
+        isPreviewMirroredFlow,
+        showWifiSheetFlow,
+        wifiConfigFlow,
+        detectedGatewayIpFlow
+    ) { mirrored, showSheet, wifiConfig, gatewayIp ->
+        Triple(mirrored, showSheet, wifiConfig to gatewayIp)
+    }
+
+    private val liveViewSnapshotFlow = combine(
+        liveViewController.connectionState,
+        liveViewController.latestFrame,
+        liveViewController.fps,
+        liveViewMetaFlow
+    ) { lvState, frame, fps, meta ->
+        LiveViewSnapshot(
+            liveViewState = lvState,
+            liveViewFrame = frame,
+            liveViewFps = fps,
+            isPreviewMirrored = meta.first,
+            showWifiSheet = meta.second,
+            wifiConfig = meta.third.first,
+            detectedGatewayIp = meta.third.second
+        )
+    }
+
+    val uiState: StateFlow<ShutterUiState> = combine(
+        bleSnapshotFlow,
+        timerConfigFlow,
+        phaseFlow,
+        showTimerSheetFlow,
+        statusHintFlow,
+        liveViewSnapshotFlow
     ) { values ->
-        @Suppress("UNCHECKED_CAST")
+        val ble = values[0] as BleSnapshot
+        val timer = values[1] as TimerConfigSnapshot
+        val phase = values[2] as ShutterPhase
+        val showTimer = values[3] as Boolean
+        val hint = values[4] as String?
+        val lv = values[5] as LiveViewSnapshot
         ShutterUiState(
-            connectionState = values[0] as BleConnectionState,
-            phase = values[1] as ShutterPhase,
-            configuredSeconds = values[2] as Int,
-            burstEnabled = values[3] as Boolean,
-            burstCount = values[4] as Int,
-            burstIntervalSeconds = values[5] as Int,
-            showCameraPicker = values[6] as Boolean,
-            showTimerSheet = values[7] as Boolean,
-            discoveredCameras = values[8] as List<DiscoveredCamera>,
-            isScanning = values[9] as Boolean,
-            statusHint = values[10] as String?
+            connectionState = ble.connectionState,
+            phase = phase,
+            configuredSeconds = timer.configuredSeconds,
+            burstEnabled = timer.burstEnabled,
+            burstCount = timer.burstCount,
+            burstIntervalSeconds = timer.burstIntervalSeconds,
+            showCameraPicker = ble.showCameraPicker,
+            showTimerSheet = showTimer,
+            discoveredCameras = ble.discoveredCameras,
+            isScanning = ble.isScanning,
+            statusHint = hint,
+            liveViewState = lv.liveViewState,
+            liveViewFrame = lv.liveViewFrame,
+            liveViewFps = lv.liveViewFps,
+            isPreviewMirrored = lv.isPreviewMirrored,
+            showWifiSheet = lv.showWifiSheet,
+            wifiConfig = lv.wifiConfig,
+            detectedGatewayIp = lv.detectedGatewayIp
         )
     }.stateIn(
         scope = scope,
@@ -104,7 +221,9 @@ class ShutterTimerViewModel(
             configuredSeconds = configuredSecondsFlow.value,
             burstEnabled = burstEnabledFlow.value,
             burstCount = burstCountFlow.value,
-            burstIntervalSeconds = burstIntervalSecondsFlow.value
+            burstIntervalSeconds = burstIntervalSecondsFlow.value,
+            isPreviewMirrored = isPreviewMirroredFlow.value,
+            wifiConfig = wifiConfigFlow.value
         )
     )
 
@@ -125,7 +244,9 @@ class ShutterTimerViewModel(
             else -> Unit
         }
 
-        if (bleController.connectionState.value !is BleConnectionState.Connected) {
+        val wifiReady = liveViewController.connectionState.value is LiveViewConnectionState.Connected
+        val bleReady = bleController.connectionState.value is BleConnectionState.Connected
+        if (!wifiReady && !bleReady) {
             feedbackPlayer.playMechanicalPress()
             openCameraPicker()
             return
@@ -195,6 +316,42 @@ class ShutterTimerViewModel(
         bleController.startScan()
     }
 
+    fun openWifiSheet() {
+        detectedGatewayIpFlow.value = liveViewController.detectWifiGatewayIp()
+        showWifiSheetFlow.value = true
+    }
+
+    fun dismissWifiSheet() {
+        showWifiSheetFlow.value = false
+    }
+
+    fun connectWifi(config: WifiCameraConfig) {
+        val sanitized = config.copy(
+            host = config.host.trim(),
+            sshUsername = config.sshUsername.trim()
+        )
+        wifiConfigFlow.value = sanitized
+        preferences.setWifiHost(sanitized.host)
+        preferences.setWifiUseSsh(sanitized.useSsh)
+        preferences.setWifiSshUsername(sanitized.sshUsername)
+        preferences.setWifiSshPassword(sanitized.sshPassword)
+        liveViewController.connect(sanitized)
+    }
+
+    fun disconnectWifi() {
+        if (bleController.connectionState.value !is BleConnectionState.Connected) {
+            cancelCountdown(silent = true)
+        }
+        liveViewController.disconnect()
+        showWifiSheetFlow.value = false
+    }
+
+    fun togglePreviewMirror() {
+        val next = !isPreviewMirroredFlow.value
+        isPreviewMirroredFlow.value = next
+        preferences.setPreviewMirrored(next)
+    }
+
     private fun startCountdown() {
         val initialDelay = configuredSecondsFlow.value
         val totalShots = if (burstEnabledFlow.value) burstCountFlow.value else 1
@@ -232,16 +389,16 @@ class ShutterTimerViewModel(
                     }
                 }
 
-                // 倒计时结束，此时才通过 BLE 通知索尼相机按下快门
+                // 倒计时结束，优先走 Wi-Fi PTP/IP 快门（若已连接），否则走 BLE 快门
                 phaseFlow.value = ShutterPhase.Triggering(
                     currentShot = shot,
                     totalShots = totalShots
                 )
                 feedbackPlayer.playShutterTrigger()
 
-                val result = bleController.triggerShutter()
+                val result = triggerConnectedShutter()
                 if (result.isFailure) {
-                    val reason = result.exceptionOrNull()?.message ?: "快门发送失败，请检查相机蓝牙遥控开关"
+                    val reason = result.exceptionOrNull()?.message ?: "快门发送失败，请检查相机遥控设置"
                     showTemporaryHint(
                         if (totalShots > 1) "第 $shot/$totalShots 张失败：$reason" else reason
                     )
@@ -263,6 +420,16 @@ class ShutterTimerViewModel(
             )
             delay(650L)
             phaseFlow.value = ShutterPhase.Idle
+        }
+    }
+
+    private suspend fun triggerConnectedShutter(): Result<Unit> {
+        return when {
+            liveViewController.connectionState.value is LiveViewConnectionState.Connected ->
+                liveViewController.triggerShutter()
+            bleController.connectionState.value is BleConnectionState.Connected ->
+                bleController.triggerShutter()
+            else -> Result.failure(IllegalStateException("相机连接已断开"))
         }
     }
 
@@ -297,6 +464,7 @@ class ShutterTimerViewModel(
         countdownJob?.cancel()
         hintJob?.cancel()
         bleController.release()
+        liveViewController.release()
         feedbackPlayer.release()
     }
 

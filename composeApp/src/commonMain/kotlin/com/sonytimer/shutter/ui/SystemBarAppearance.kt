@@ -4,3 +4,6 @@ import androidx.compose.runtime.Composable
 
 @Composable
 expect fun EnforceDarkSystemBars()
+
+@Composable
+expect fun KeepScreenOnEffect(enabled: Boolean)

@@ -31,6 +31,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sonytimer.shutter.controller.BleConnectionState
@@ -52,9 +53,13 @@ fun IndustrialMechanicalButton(
     phase: ShutterPhase,
     configuredSeconds: Int,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isWifiConnected: Boolean = false,
+    buttonSize: Dp = 308.dp
 ) {
     var isFingerDown by remember { mutableStateOf(false) }
+    val isReadyConnected = connectionState is BleConnectionState.Connected || isWifiConnected
+    val scaleRatio = (buttonSize / 308.dp).coerceIn(0.52f, 1.0f)
 
     val isPressedVisual = isFingerDown || phase is ShutterPhase.Triggering
     val pressProgress by animateFloatAsState(
@@ -71,7 +76,7 @@ fun IndustrialMechanicalButton(
             is ShutterPhase.CountingDown -> phase.remainingSeconds.toFloat() / phase.totalSeconds.coerceAtLeast(1)
             is ShutterPhase.Triggering -> 0f
             is ShutterPhase.ShotSuccess -> 1f
-            is ShutterPhase.Idle -> if (connectionState is BleConnectionState.Connected) 1f else 0f
+            is ShutterPhase.Idle -> if (isReadyConnected) 1f else 0f
         },
         animationSpec = tween(durationMillis = 260),
         label = "ledSweep"
@@ -82,15 +87,15 @@ fun IndustrialMechanicalButton(
         phase is ShutterPhase.Triggering -> Color(0xFFFFB020)
         phase is ShutterPhase.CountingDown && phase.isInterval -> Color(0xFF38BDF8)
         phase is ShutterPhase.CountingDown -> Color(0xFFFF5A36)
-        connectionState is BleConnectionState.Connected -> Color(0xFF34D399)
+        isReadyConnected -> Color(0xFF34D399)
         connectionState is BleConnectionState.Connecting || connectionState is BleConnectionState.Pairing -> Color(0xFFF59E0B)
         else -> Color(0xFF4B5563)
     }
 
     Box(
         modifier = modifier
-            .size(308.dp)
-            .pointerInput(phase, connectionState) {
+            .size(buttonSize)
+            .pointerInput(phase, connectionState, isWifiConnected) {
                 detectTapGestures(
                     onPress = {
                         isFingerDown = true
@@ -102,21 +107,22 @@ fun IndustrialMechanicalButton(
             },
         contentAlignment = Alignment.Center
     ) {
-        Canvas(modifier = Modifier.size(308.dp)) {
+        Canvas(modifier = Modifier.size(buttonSize)) {
             val w = size.width
             val h = size.height
             val center = Offset(w / 2f, h / 2f)
+            val u = (minOf(w, h) / 308f)
 
             // 1. 工业铸铝方型面板外阴影
             drawRoundRect(
                 color = Color.Black.copy(alpha = 0.65f),
-                topLeft = Offset(10.dp.toPx(), 16.dp.toPx()),
-                size = Size(w - 20.dp.toPx(), h - 20.dp.toPx()),
-                cornerRadius = CornerRadius(34.dp.toPx())
+                topLeft = Offset(10f * u, 16f * u),
+                size = Size(w - 20f * u, h - 20f * u),
+                cornerRadius = CornerRadius(34f * u)
             )
 
             // 2. 拉丝枪灰金属面板主体
-            val plateInset = 10.dp.toPx()
+            val plateInset = 10f * u
             val plateSize = Size(w - plateInset * 2, h - plateInset * 2)
             drawRoundRect(
                 brush = Brush.linearGradient(
@@ -131,7 +137,7 @@ fun IndustrialMechanicalButton(
                 ),
                 topLeft = Offset(plateInset, plateInset),
                 size = plateSize,
-                cornerRadius = CornerRadius(32.dp.toPx())
+                cornerRadius = CornerRadius(32f * u)
             )
 
             // 面板倒角高光描边
@@ -147,12 +153,12 @@ fun IndustrialMechanicalButton(
                 ),
                 topLeft = Offset(plateInset, plateInset),
                 size = plateSize,
-                cornerRadius = CornerRadius(32.dp.toPx()),
-                style = Stroke(width = 1.6.dp.toPx())
+                cornerRadius = CornerRadius(32f * u),
+                style = Stroke(width = 1.6f * u)
             )
 
             // 四角复古沉头工业螺丝
-            val screwOffset = 34.dp.toPx()
+            val screwOffset = 34f * u
             val screwPositions = listOf(
                 Offset(screwOffset, screwOffset),
                 Offset(w - screwOffset, screwOffset),
@@ -160,15 +166,20 @@ fun IndustrialMechanicalButton(
                 Offset(w - screwOffset, h - screwOffset)
             )
             screwPositions.forEachIndexed { idx, pos ->
-                drawIndustrialScrew(center = pos, radius = 9.dp.toPx(), slotAngleDeg = 35f + idx * 27f)
+                drawIndustrialScrew(
+                    center = pos,
+                    radius = 9f * u,
+                    slotAngleDeg = 35f + idx * 27f,
+                    unit = u
+                )
             }
 
             // 3. 车削滚花金属外护圈
-            val bezelRadius = 112.dp.toPx()
+            val bezelRadius = 112f * u
             drawCircle(
                 color = Color.Black.copy(alpha = 0.72f),
-                radius = bezelRadius + 4.dp.toPx(),
-                center = center + Offset(0f, 5.dp.toPx())
+                radius = bezelRadius + 4f * u,
+                center = center + Offset(0f, 5f * u)
             )
             drawCircle(
                 brush = Brush.linearGradient(
@@ -186,8 +197,8 @@ fun IndustrialMechanicalButton(
             )
 
             // 滚花防滑纹理刻线（60 齿）
-            val knurlInner = bezelRadius - 7.dp.toPx()
-            val knurlOuter = bezelRadius - 1.5.dp.toPx()
+            val knurlInner = bezelRadius - 7f * u
+            val knurlOuter = bezelRadius - 1.5f * u
             for (i in 0 until 60) {
                 val rad = (i * 6.0) * PI / 180.0
                 val cosA = cos(rad).toFloat()
@@ -196,12 +207,12 @@ fun IndustrialMechanicalButton(
                     color = if (i % 2 == 0) Color.Black.copy(alpha = 0.45f) else Color.White.copy(alpha = 0.14f),
                     start = Offset(center.x + knurlInner * cosA, center.y + knurlInner * sinA),
                     end = Offset(center.x + knurlOuter * cosA, center.y + knurlOuter * sinA),
-                    strokeWidth = 1.4.dp.toPx()
+                    strokeWidth = 1.4f * u
                 )
             }
 
             // 4. 按钮沉孔井道（黑色深槽）
-            val wellRadius = 96.dp.toPx()
+            val wellRadius = 96f * u
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(Color(0xFF0A0B0D), Color(0xFF181A1E)),
@@ -213,12 +224,12 @@ fun IndustrialMechanicalButton(
             )
 
             // 5. 嵌入式细环形 LED 指示灯（贴在护圈内沿）
-            val ledRadius = 100.dp.toPx()
+            val ledRadius = 100f * u
             drawCircle(
                 color = Color(0xFF101215),
                 radius = ledRadius,
                 center = center,
-                style = Stroke(width = 3.dp.toPx())
+                style = Stroke(width = 3f * u)
             )
             if (countdownSweep > 0f) {
                 drawArc(
@@ -228,7 +239,7 @@ fun IndustrialMechanicalButton(
                     useCenter = false,
                     topLeft = Offset(center.x - ledRadius, center.y - ledRadius),
                     size = Size(ledRadius * 2, ledRadius * 2),
-                    style = Stroke(width = 6.5.dp.toPx(), cap = StrokeCap.Round)
+                    style = Stroke(width = 6.5f * u, cap = StrokeCap.Round)
                 )
                 drawArc(
                     color = ledColor,
@@ -237,22 +248,22 @@ fun IndustrialMechanicalButton(
                     useCenter = false,
                     topLeft = Offset(center.x - ledRadius, center.y - ledRadius),
                     size = Size(ledRadius * 2, ledRadius * 2),
-                    style = Stroke(width = 2.6.dp.toPx(), cap = StrokeCap.Round)
+                    style = Stroke(width = 2.6f * u, cap = StrokeCap.Round)
                 )
             }
 
             // 6. 复古机械大键帽（随按压下沉、阴影收缩、微缩放）
-            val travelY = pressProgress * 6.5.dp.toPx()
+            val travelY = pressProgress * 6.5f * u
             val capScale = 1f - pressProgress * 0.025f
-            val capRadius = 86.dp.toPx() * capScale
-            val capCenter = Offset(center.x, center.y - 3.dp.toPx() + travelY)
+            val capRadius = 86f * u * capScale
+            val capCenter = Offset(center.x, center.y - 3f * u + travelY)
 
             // 键帽底部立体裙边与投影
-            val skirtHeight = (1f - pressProgress) * 9.dp.toPx() + 2.dp.toPx()
+            val skirtHeight = (1f - pressProgress) * 9f * u + 2f * u
             drawCircle(
                 color = Color.Black.copy(alpha = 0.65f - pressProgress * 0.22f),
-                radius = capRadius + 2.dp.toPx(),
-                center = Offset(capCenter.x, capCenter.y + skirtHeight + 3.dp.toPx())
+                radius = capRadius + 2f * u,
+                center = Offset(capCenter.x, capCenter.y + skirtHeight + 3f * u)
             )
             drawCircle(
                 brush = Brush.verticalGradient(
@@ -306,14 +317,14 @@ fun IndustrialMechanicalButton(
                     start = Offset(capCenter.x - capRadius, capCenter.y - capRadius),
                     end = Offset(capCenter.x + capRadius, capCenter.y + capRadius)
                 ),
-                radius = capRadius - 1.dp.toPx(),
+                radius = capRadius - 1f * u,
                 center = capCenter,
-                style = Stroke(width = 2.dp.toPx())
+                style = Stroke(width = 2f * u)
             )
         }
 
         // 键帽中心刻字/倒计时数字（跟着按压行程同步位移）
-        val textOffsetY = (-3f + pressProgress * 6.5f)
+        val textOffsetY = (-3f + pressProgress * 6.5f) * scaleRatio
         val textScale = 1f - pressProgress * 0.025f
         val labelText = when (phase) {
             is ShutterPhase.CountingDown -> phase.remainingSeconds.toString()
@@ -322,10 +333,10 @@ fun IndustrialMechanicalButton(
             is ShutterPhase.Idle -> "${configuredSeconds}S"
         }
         val labelSize = when (phase) {
-            is ShutterPhase.CountingDown -> if (phase.totalShots > 1) 46.sp else 54.sp
-            is ShutterPhase.Triggering, is ShutterPhase.ShotSuccess -> 40.sp
-            is ShutterPhase.Idle -> 26.sp
-        }
+            is ShutterPhase.CountingDown -> (if (phase.totalShots > 1) 46f else 54f) * scaleRatio
+            is ShutterPhase.Triggering, is ShutterPhase.ShotSuccess -> 40f * scaleRatio
+            is ShutterPhase.Idle -> 26f * scaleRatio
+        }.sp
         val labelColor = when (phase) {
             is ShutterPhase.CountingDown -> Color(0xFFFFF5EB)
             is ShutterPhase.ShotSuccess -> Color(0xFFD1FAE5)
@@ -352,14 +363,14 @@ fun IndustrialMechanicalButton(
                 fontSize = labelSize,
                 fontWeight = FontWeight.Bold,
                 fontFamily = FontFamily.Monospace,
-                letterSpacing = if (phase is ShutterPhase.Idle) 2.sp else 0.sp
+                letterSpacing = if (phase is ShutterPhase.Idle) (2f * scaleRatio).sp else 0.sp
             )
             if (subLabelText != null) {
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height((4f * scaleRatio).dp))
                 Text(
                     text = subLabelText,
                     color = labelColor.copy(alpha = 0.9f),
-                    fontSize = 13.sp,
+                    fontSize = (13f * scaleRatio).sp,
                     fontWeight = FontWeight.SemiBold,
                     fontFamily = FontFamily.Monospace,
                     letterSpacing = 1.sp
@@ -372,13 +383,14 @@ fun IndustrialMechanicalButton(
 private fun DrawScope.drawIndustrialScrew(
     center: Offset,
     radius: Float,
-    slotAngleDeg: Float
+    slotAngleDeg: Float,
+    unit: Float
 ) {
     // 螺丝沉孔阴影
     drawCircle(
         color = Color.Black.copy(alpha = 0.75f),
-        radius = radius + 1.5.dp.toPx(),
-        center = center + Offset(0f, 1.dp.toPx())
+        radius = radius + 1.5f * unit,
+        center = center + Offset(0f, 1f * unit)
     )
     // 螺丝金属头
     drawCircle(
@@ -398,7 +410,7 @@ private fun DrawScope.drawIndustrialScrew(
         color = Color(0xFF121316),
         start = Offset(center.x - dx, center.y - dy),
         end = Offset(center.x + dx, center.y + dy),
-        strokeWidth = 2.dp.toPx(),
+        strokeWidth = 2f * unit,
         cap = StrokeCap.Round
     )
 }

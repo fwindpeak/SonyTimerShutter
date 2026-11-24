@@ -31,4 +31,19 @@ interface TimerPreferences {
 
     fun getBurstIntervalSeconds(defaultValue: Int = 2): Int
     fun setBurstIntervalSeconds(seconds: Int)
+
+    fun getWifiHost(defaultValue: String = "192.168.122.1"): String
+    fun setWifiHost(host: String)
+
+    fun isWifiUseSsh(defaultValue: Boolean = true): Boolean
+    fun setWifiUseSsh(useSsh: Boolean)
+
+    fun getWifiSshUsername(defaultValue: String = ""): String
+    fun setWifiSshUsername(username: String)
+
+    fun getWifiSshPassword(defaultValue: String = ""): String
+    fun setWifiSshPassword(password: String)
+
+    fun isPreviewMirrored(defaultValue: Boolean = false): Boolean
+    fun setPreviewMirrored(mirrored: Boolean)
 }

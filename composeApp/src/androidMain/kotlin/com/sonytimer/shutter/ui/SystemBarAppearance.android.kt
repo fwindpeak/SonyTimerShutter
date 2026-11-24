@@ -33,6 +33,21 @@ actual fun EnforceDarkSystemBars() {
     }
 }
 
+@Composable
+actual fun KeepScreenOnEffect(enabled: Boolean) {
+    val view = LocalView.current
+    if (view.isInEditMode) return
+
+    DisposableEffect(view, enabled) {
+        view.keepScreenOn = enabled
+        onDispose {
+            if (enabled) {
+                view.keepScreenOn = false
+            }
+        }
+    }
+}
+
 private fun applyDarkSystemBars(window: Window) {
     WindowCompat.getInsetsController(window, window.decorView).apply {
         isAppearanceLightStatusBars = false
