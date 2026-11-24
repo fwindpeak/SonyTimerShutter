@@ -23,5 +23,24 @@
 
 ## 打开与运行
 1. 解压后使用 Android Studio（Ladybug 或更新版本，JDK 17）直接 Open 根目录。
-2. 等待 Gradle Sync 完成（工程未附带 `gradle-wrapper.jar` 二进制，Android Studio 会自动使用本地 Gradle / Wrapper 同步）。
+2. 等待 Gradle Sync 完成（仓库已附带 Gradle Wrapper，可直接使用 `./gradlew` 构建）。
 3. 连接安卓真机（需实体蓝牙，模拟器不支持 BLE）运行 `composeApp`。
+
+## GitHub Actions 自动编译与发布 Release
+仓库已配置 [`.github/workflows/release.yml`](.github/workflows/release.yml)，支持自动编译可安装的 Release APK 并创建 GitHub Release：
+
+- **方式一：推送版本 Tag 自动发布**
+  ```bash
+  git tag v1.0.0
+  git push origin v1.0.0
+  ```
+  Tag 带 `-`（例如 `v1.0.0-beta.1`）时会自动标记为 Pre-release。
+- **方式二：手动触发**
+  在 GitHub 仓库 `Actions → Release Android APK → Run workflow` 中输入版本号（如 `v1.0.0`）触发构建与发版。
+
+### 正式签名配置（可选）
+若未配置签名密钥，CI 会自动回退为 Debug 签名（可直接安装调试）。如需正式签名发布，请在 GitHub 仓库 `Settings → Secrets and variables → Actions` 中添加以下 4 个 Secrets：
+- `ANDROID_KEYSTORE_BASE64`：Keystore 文件的 Base64 编码（`base64 -i release.keystore`）
+- `ANDROID_KEYSTORE_PASSWORD`：Keystore 密码
+- `ANDROID_KEY_ALIAS`：Key Alias
+- `ANDROID_KEY_PASSWORD`：Key 密码
