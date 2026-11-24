@@ -22,4 +22,13 @@ interface FeedbackPlayer {
 interface TimerPreferences {
     fun getTimerSeconds(defaultValue: Int = 5): Int
     fun setTimerSeconds(seconds: Int)
+
+    fun isBurstEnabled(defaultValue: Boolean = false): Boolean
+    fun setBurstEnabled(enabled: Boolean)
+
+    fun getBurstCount(defaultValue: Int = 3): Int
+    fun setBurstCount(count: Int)
+
+    fun getBurstIntervalSeconds(defaultValue: Int = 2): Int
+    fun setBurstIntervalSeconds(seconds: Int)
 }

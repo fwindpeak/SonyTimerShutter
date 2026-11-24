@@ -12,15 +12,29 @@ import kotlinx.coroutines.launch
 
 sealed interface ShutterPhase {
     data object Idle : ShutterPhase
-    data class CountingDown(val remainingSeconds: Int, val totalSeconds: Int) : ShutterPhase
-    data object Triggering : ShutterPhase
-    data object ShotSuccess : ShutterPhase
+    data class CountingDown(
+        val remainingSeconds: Int,
+        val totalSeconds: Int,
+        val currentShot: Int = 1,
+        val totalShots: Int = 1,
+        val isInterval: Boolean = false
+    ) : ShutterPhase
+    data class Triggering(
+        val currentShot: Int = 1,
+        val totalShots: Int = 1
+    ) : ShutterPhase
+    data class ShotSuccess(
+        val totalShots: Int = 1
+    ) : ShutterPhase
 }
 
 data class ShutterUiState(
     val connectionState: BleConnectionState = BleConnectionState.Disconnected,
     val phase: ShutterPhase = ShutterPhase.Idle,
     val configuredSeconds: Int = 5,
+    val burstEnabled: Boolean = false,
+    val burstCount: Int = 3,
+    val burstIntervalSeconds: Int = 2,
     val showCameraPicker: Boolean = false,
     val showTimerSheet: Boolean = false,
     val discoveredCameras: List<DiscoveredCamera> = emptyList(),
@@ -36,7 +50,17 @@ class ShutterTimerViewModel(
 ) {
     private val phaseFlow = MutableStateFlow<ShutterPhase>(ShutterPhase.Idle)
     private val configuredSecondsFlow = MutableStateFlow(
-        preferences.getTimerSeconds(defaultValue = 5).coerceIn(1, 60)
+        preferences.getTimerSeconds(defaultValue = 5).coerceIn(MIN_TIMER_SECONDS, MAX_TIMER_SECONDS)
+    )
+    private val burstEnabledFlow = MutableStateFlow(
+        preferences.isBurstEnabled(defaultValue = false)
+    )
+    private val burstCountFlow = MutableStateFlow(
+        preferences.getBurstCount(defaultValue = 3).coerceIn(MIN_BURST_COUNT, MAX_BURST_COUNT)
+    )
+    private val burstIntervalSecondsFlow = MutableStateFlow(
+        preferences.getBurstIntervalSeconds(defaultValue = 2)
+            .coerceIn(MIN_BURST_INTERVAL_SECONDS, MAX_BURST_INTERVAL_SECONDS)
     )
     private val showCameraPickerFlow = MutableStateFlow(false)
     private val showTimerSheetFlow = MutableStateFlow(false)
@@ -44,11 +68,15 @@ class ShutterTimerViewModel(
 
     private var countdownJob: Job? = null
     private var hintJob: Job? = null
+    private var cancelBurstAfterCurrentShot = false
 
     val uiState: StateFlow<ShutterUiState> = combine(
         bleController.connectionState,
         phaseFlow,
         configuredSecondsFlow,
+        burstEnabledFlow,
+        burstCountFlow,
+        burstIntervalSecondsFlow,
         showCameraPickerFlow,
         showTimerSheetFlow,
         bleController.discoveredCameras,
@@ -60,16 +88,24 @@ class ShutterTimerViewModel(
             connectionState = values[0] as BleConnectionState,
             phase = values[1] as ShutterPhase,
             configuredSeconds = values[2] as Int,
-            showCameraPicker = values[3] as Boolean,
-            showTimerSheet = values[4] as Boolean,
-            discoveredCameras = values[5] as List<DiscoveredCamera>,
-            isScanning = values[6] as Boolean,
-            statusHint = values[7] as String?
+            burstEnabled = values[3] as Boolean,
+            burstCount = values[4] as Int,
+            burstIntervalSeconds = values[5] as Int,
+            showCameraPicker = values[6] as Boolean,
+            showTimerSheet = values[7] as Boolean,
+            discoveredCameras = values[8] as List<DiscoveredCamera>,
+            isScanning = values[9] as Boolean,
+            statusHint = values[10] as String?
         )
     }.stateIn(
         scope = scope,
         started = SharingStarted.Eagerly,
-        initialValue = ShutterUiState(configuredSeconds = configuredSecondsFlow.value)
+        initialValue = ShutterUiState(
+            configuredSeconds = configuredSecondsFlow.value,
+            burstEnabled = burstEnabledFlow.value,
+            burstCount = burstCountFlow.value,
+            burstIntervalSeconds = burstIntervalSecondsFlow.value
+        )
     )
 
     fun onMainButtonClick() {
@@ -79,7 +115,13 @@ class ShutterTimerViewModel(
                 cancelCountdown()
                 return
             }
-            is ShutterPhase.Triggering -> return
+            is ShutterPhase.Triggering -> {
+                if (currentPhase.totalShots > 1 && currentPhase.currentShot < currentPhase.totalShots) {
+                    cancelBurstAfterCurrentShot = true
+                    showTemporaryHint("正在停止连拍...")
+                }
+                return
+            }
             else -> Unit
         }
 
@@ -92,18 +134,34 @@ class ShutterTimerViewModel(
         startCountdown()
     }
 
-    fun onMainButtonLongPress() {
+    fun openTimerSheet() {
         if (phaseFlow.value is ShutterPhase.CountingDown || phaseFlow.value is ShutterPhase.Triggering) {
             return
         }
-        feedbackPlayer.playLongPressDetent()
         showTimerSheetFlow.value = true
     }
 
     fun updateTimerSeconds(seconds: Int) {
-        val clamped = seconds.coerceIn(1, 60)
+        val clamped = seconds.coerceIn(MIN_TIMER_SECONDS, MAX_TIMER_SECONDS)
         configuredSecondsFlow.value = clamped
         preferences.setTimerSeconds(clamped)
+    }
+
+    fun updateBurstEnabled(enabled: Boolean) {
+        burstEnabledFlow.value = enabled
+        preferences.setBurstEnabled(enabled)
+    }
+
+    fun updateBurstCount(count: Int) {
+        val clamped = count.coerceIn(MIN_BURST_COUNT, MAX_BURST_COUNT)
+        burstCountFlow.value = clamped
+        preferences.setBurstCount(clamped)
+    }
+
+    fun updateBurstIntervalSeconds(seconds: Int) {
+        val clamped = seconds.coerceIn(MIN_BURST_INTERVAL_SECONDS, MAX_BURST_INTERVAL_SECONDS)
+        burstIntervalSecondsFlow.value = clamped
+        preferences.setBurstIntervalSeconds(clamped)
     }
 
     fun dismissTimerSheet() {
@@ -138,43 +196,91 @@ class ShutterTimerViewModel(
     }
 
     private fun startCountdown() {
-        val total = configuredSecondsFlow.value
+        val initialDelay = configuredSecondsFlow.value
+        val totalShots = if (burstEnabledFlow.value) burstCountFlow.value else 1
+        val intervalSeconds = burstIntervalSecondsFlow.value
+        cancelBurstAfterCurrentShot = false
+
         countdownJob?.cancel()
         feedbackPlayer.playMechanicalPress()
 
         countdownJob = scope.launch {
-            for (remaining in total downTo 1) {
+            for (remaining in initialDelay downTo 1) {
                 phaseFlow.value = ShutterPhase.CountingDown(
                     remainingSeconds = remaining,
-                    totalSeconds = total
+                    totalSeconds = initialDelay,
+                    currentShot = 1,
+                    totalShots = totalShots,
+                    isInterval = false
                 )
                 feedbackPlayer.playCountdownTick(finalTick = remaining == 1)
                 delay(1_000L)
             }
 
-            // 倒计时结束，此时才通过 BLE 通知索尼相机按下快门
-            phaseFlow.value = ShutterPhase.Triggering
-            feedbackPlayer.playShutterTrigger()
+            for (shot in 1..totalShots) {
+                if (shot > 1) {
+                    for (remaining in intervalSeconds downTo 1) {
+                        phaseFlow.value = ShutterPhase.CountingDown(
+                            remainingSeconds = remaining,
+                            totalSeconds = intervalSeconds,
+                            currentShot = shot,
+                            totalShots = totalShots,
+                            isInterval = true
+                        )
+                        feedbackPlayer.playCountdownTick(finalTick = remaining == 1)
+                        delay(1_000L)
+                    }
+                }
 
-            val result = bleController.triggerShutter()
-            if (result.isSuccess) {
-                phaseFlow.value = ShutterPhase.ShotSuccess
-                showTemporaryHint("快门已触发")
-                delay(650L)
-            } else {
-                showTemporaryHint(result.exceptionOrNull()?.message ?: "快门发送失败，请检查相机蓝牙遥控开关")
+                // 倒计时结束，此时才通过 BLE 通知索尼相机按下快门
+                phaseFlow.value = ShutterPhase.Triggering(
+                    currentShot = shot,
+                    totalShots = totalShots
+                )
+                feedbackPlayer.playShutterTrigger()
+
+                val result = bleController.triggerShutter()
+                if (result.isFailure) {
+                    val reason = result.exceptionOrNull()?.message ?: "快门发送失败，请检查相机蓝牙遥控开关"
+                    showTemporaryHint(
+                        if (totalShots > 1) "第 $shot/$totalShots 张失败：$reason" else reason
+                    )
+                    phaseFlow.value = ShutterPhase.Idle
+                    return@launch
+                }
+
+                if (cancelBurstAfterCurrentShot && shot < totalShots) {
+                    feedbackPlayer.playCancel()
+                    showTemporaryHint("已停止连拍 ($shot/$totalShots)")
+                    phaseFlow.value = ShutterPhase.Idle
+                    return@launch
+                }
             }
+
+            phaseFlow.value = ShutterPhase.ShotSuccess(totalShots = totalShots)
+            showTemporaryHint(
+                if (totalShots > 1) "连拍完成 (${totalShots}张)" else "快门已触发"
+            )
+            delay(650L)
             phaseFlow.value = ShutterPhase.Idle
         }
     }
 
     private fun cancelCountdown(silent: Boolean = false) {
+        val prevPhase = phaseFlow.value
+        cancelBurstAfterCurrentShot = false
         countdownJob?.cancel()
         countdownJob = null
         phaseFlow.value = ShutterPhase.Idle
         if (!silent) {
             feedbackPlayer.playCancel()
-            showTemporaryHint("已取消倒计时")
+            val message = if (prevPhase is ShutterPhase.CountingDown && prevPhase.isInterval) {
+                val completed = (prevPhase.currentShot - 1).coerceAtLeast(0)
+                "已停止连拍 ($completed/${prevPhase.totalShots})"
+            } else {
+                "已取消倒计时"
+            }
+            showTemporaryHint(message)
         }
     }
 
@@ -192,5 +298,14 @@ class ShutterTimerViewModel(
         hintJob?.cancel()
         bleController.release()
         feedbackPlayer.release()
+    }
+
+    companion object {
+        const val MIN_TIMER_SECONDS = 1
+        const val MAX_TIMER_SECONDS = 60
+        const val MIN_BURST_COUNT = 2
+        const val MAX_BURST_COUNT = 99
+        const val MIN_BURST_INTERVAL_SECONDS = 1
+        const val MAX_BURST_INTERVAL_SECONDS = 60
     }
 }

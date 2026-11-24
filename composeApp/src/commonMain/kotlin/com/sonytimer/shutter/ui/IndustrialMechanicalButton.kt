@@ -7,6 +7,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -41,7 +44,7 @@ import kotlin.math.sin
  * - 拉丝铸铁/阳极氧化铝底座面板 + 四角沉头一字/内六角工业螺丝
  * - 车削滚花钢制防护护圈 + 嵌入式环形状态指示灯
  * - 复古暗红电木/烤漆内凹大键帽 + 真实按压行程、阴影压缩与高光衰减
- * - 短按：开始倒计时 / 倒计时中短按取消；长按：静默呼出隐藏的秒数调节面板
+ * - 纯粹快门按键：短按开始倒计时 / 倒计时或连拍过程中短按取消
  */
 @Composable
 fun IndustrialMechanicalButton(
@@ -49,7 +52,6 @@ fun IndustrialMechanicalButton(
     phase: ShutterPhase,
     configuredSeconds: Int,
     onClick: () -> Unit,
-    onLongPress: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var isFingerDown by remember { mutableStateOf(false) }
@@ -67,7 +69,8 @@ fun IndustrialMechanicalButton(
     val countdownSweep by animateFloatAsState(
         targetValue = when (phase) {
             is ShutterPhase.CountingDown -> phase.remainingSeconds.toFloat() / phase.totalSeconds.coerceAtLeast(1)
-            is ShutterPhase.Triggering, is ShutterPhase.ShotSuccess -> 0f
+            is ShutterPhase.Triggering -> 0f
+            is ShutterPhase.ShotSuccess -> 1f
             is ShutterPhase.Idle -> if (connectionState is BleConnectionState.Connected) 1f else 0f
         },
         animationSpec = tween(durationMillis = 260),
@@ -77,6 +80,7 @@ fun IndustrialMechanicalButton(
     val ledColor = when {
         phase is ShutterPhase.ShotSuccess -> Color(0xFF4ADE80)
         phase is ShutterPhase.Triggering -> Color(0xFFFFB020)
+        phase is ShutterPhase.CountingDown && phase.isInterval -> Color(0xFF38BDF8)
         phase is ShutterPhase.CountingDown -> Color(0xFFFF5A36)
         connectionState is BleConnectionState.Connected -> Color(0xFF34D399)
         connectionState is BleConnectionState.Connecting || connectionState is BleConnectionState.Pairing -> Color(0xFFF59E0B)
@@ -93,8 +97,7 @@ fun IndustrialMechanicalButton(
                         tryAwaitRelease()
                         isFingerDown = false
                     },
-                    onTap = { onClick() },
-                    onLongPress = { onLongPress() }
+                    onTap = { onClick() }
                 )
             },
         contentAlignment = Alignment.Center
@@ -319,8 +322,8 @@ fun IndustrialMechanicalButton(
             is ShutterPhase.Idle -> "${configuredSeconds}S"
         }
         val labelSize = when (phase) {
-            is ShutterPhase.CountingDown -> 54.sp
-            is ShutterPhase.Triggering, is ShutterPhase.ShotSuccess -> 42.sp
+            is ShutterPhase.CountingDown -> if (phase.totalShots > 1) 46.sp else 54.sp
+            is ShutterPhase.Triggering, is ShutterPhase.ShotSuccess -> 40.sp
             is ShutterPhase.Idle -> 26.sp
         }
         val labelColor = when (phase) {
@@ -328,20 +331,41 @@ fun IndustrialMechanicalButton(
             is ShutterPhase.ShotSuccess -> Color(0xFFD1FAE5)
             else -> Color(0xFFFDE8E8).copy(alpha = 0.72f)
         }
+        val subLabelText = when (phase) {
+            is ShutterPhase.Idle -> null
+            is ShutterPhase.CountingDown -> if (phase.totalShots > 1) "${phase.currentShot}/${phase.totalShots}" else null
+            is ShutterPhase.Triggering -> if (phase.totalShots > 1) "${phase.currentShot}/${phase.totalShots}" else null
+            is ShutterPhase.ShotSuccess -> if (phase.totalShots > 1) "${phase.totalShots}/${phase.totalShots}" else null
+        }
 
-        Text(
-            text = labelText,
-            color = labelColor,
-            fontSize = labelSize,
-            fontWeight = FontWeight.Bold,
-            fontFamily = FontFamily.Monospace,
-            letterSpacing = if (phase is ShutterPhase.Idle) 2.sp else 0.sp,
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier.graphicsLayer {
                 translationY = textOffsetY * density
                 scaleX = textScale
                 scaleY = textScale
             }
-        )
+        ) {
+            Text(
+                text = labelText,
+                color = labelColor,
+                fontSize = labelSize,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace,
+                letterSpacing = if (phase is ShutterPhase.Idle) 2.sp else 0.sp
+            )
+            if (subLabelText != null) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = subLabelText,
+                    color = labelColor.copy(alpha = 0.9f),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    fontFamily = FontFamily.Monospace,
+                    letterSpacing = 1.sp
+                )
+            }
+        }
     }
 }
 

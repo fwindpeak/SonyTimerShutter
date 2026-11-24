@@ -1,11 +1,13 @@
 package com.sonytimer.shutter
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.MaterialTheme
@@ -21,10 +23,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.sonytimer.shutter.controller.ShutterPhase
 import com.sonytimer.shutter.controller.ShutterTimerViewModel
 import com.sonytimer.shutter.ui.BluetoothStatusBar
 import com.sonytimer.shutter.ui.CameraPickerSheet
 import com.sonytimer.shutter.ui.IndustrialMechanicalButton
+import com.sonytimer.shutter.ui.TimerConfigBar
 import com.sonytimer.shutter.ui.TimerSettingsSheet
 
 @Composable
@@ -58,38 +62,63 @@ fun SonyTimerShutterApp(
                     .padding(top = 24.dp)
             )
 
-            // 屏幕正中：唯一明显的视觉主体 —— 工业感复古机械大按钮
+            // 屏幕正中：唯一明显的视觉主体 —— 工业感复古机械大按钮（纯快门按键）
             IndustrialMechanicalButton(
                 connectionState = uiState.connectionState,
                 phase = uiState.phase,
                 configuredSeconds = uiState.configuredSeconds,
                 onClick = viewModel::onMainButtonClick,
-                onLongPress = viewModel::onMainButtonLongPress,
                 modifier = Modifier.align(Alignment.Center)
             )
 
-            // 底部临时反馈（仅在触发/取消/出错时短暂淡入，平时完全隐藏）
-            AnimatedVisibility(
-                visible = uiState.statusHint != null,
-                enter = fadeIn(),
-                exit = fadeOut(),
+            // 底部区域：临时反馈提示 + 极简拍摄参数胶囊（与顶部蓝牙条上下对称）
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 36.dp)
+                    .padding(bottom = 28.dp)
             ) {
-                Text(
-                    text = uiState.statusHint.orEmpty(),
-                    color = Color(0xFFD1D5DB),
-                    fontSize = 13.sp,
-                    fontFamily = FontFamily.Monospace
+                Box(
+                    modifier = Modifier.height(22.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = uiState.statusHint != null,
+                        enter = fadeIn(),
+                        exit = fadeOut()
+                    ) {
+                        Text(
+                            text = uiState.statusHint.orEmpty(),
+                            color = Color(0xFFD1D5DB),
+                            fontSize = 13.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+
+                TimerConfigBar(
+                    configuredSeconds = uiState.configuredSeconds,
+                    burstEnabled = uiState.burstEnabled,
+                    burstCount = uiState.burstCount,
+                    burstIntervalSeconds = uiState.burstIntervalSeconds,
+                    enabled = uiState.phase !is ShutterPhase.CountingDown &&
+                        uiState.phase !is ShutterPhase.Triggering,
+                    onClick = viewModel::openTimerSheet
                 )
             }
 
-            // 隐藏式秒数修改弹窗（长按主按钮呼出）
+            // 拍摄参数设定弹窗（点击底部参数胶囊呼出）
             if (uiState.showTimerSheet) {
                 TimerSettingsSheet(
                     currentSeconds = uiState.configuredSeconds,
+                    burstEnabled = uiState.burstEnabled,
+                    burstCount = uiState.burstCount,
+                    burstIntervalSeconds = uiState.burstIntervalSeconds,
                     onSelectSeconds = viewModel::updateTimerSeconds,
+                    onToggleBurst = viewModel::updateBurstEnabled,
+                    onSelectBurstCount = viewModel::updateBurstCount,
+                    onSelectBurstInterval = viewModel::updateBurstIntervalSeconds,
                     onDismiss = viewModel::dismissTimerSheet
                 )
             }

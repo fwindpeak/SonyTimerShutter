@@ -24,12 +24,14 @@ import com.sonytimer.shutter.controller.CameraBleController
 import com.sonytimer.shutter.controller.DiscoveredCamera
 import com.sonytimer.shutter.protocol.SonyBleProtocol
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 
@@ -349,9 +351,11 @@ class AndroidSonyBleController(
             } finally {
                 focusAcquiredSignal = null
                 // 3 & 4. 必须成对释放全按与半按，防止索尼相机锁死在半按状态
-                runCatching { writePacketLocked(SonyBleProtocol.CMD_SHUTTER_FULL_UP) }
-                delay(60L)
-                runCatching { writePacketLocked(SonyBleProtocol.CMD_SHUTTER_HALF_UP) }
+                withContext(NonCancellable) {
+                    runCatching { writePacketLocked(SonyBleProtocol.CMD_SHUTTER_FULL_UP) }
+                    delay(60L)
+                    runCatching { writePacketLocked(SonyBleProtocol.CMD_SHUTTER_HALF_UP) }
+                }
             }
         }
     }
