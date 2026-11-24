@@ -400,7 +400,8 @@ class ShutterTimerViewModel(
                 if (result.isFailure) {
                     val reason = result.exceptionOrNull()?.message ?: "快门发送失败，请检查相机遥控设置"
                     showTemporaryHint(
-                        if (totalShots > 1) "第 $shot/$totalShots 张失败：$reason" else reason
+                        message = if (totalShots > 1) "第 $shot/$totalShots 张失败：$reason" else reason,
+                        durationMs = 4_500L
                     )
                     phaseFlow.value = ShutterPhase.Idle
                     return@launch
@@ -451,11 +452,11 @@ class ShutterTimerViewModel(
         }
     }
 
-    private fun showTemporaryHint(message: String) {
+    private fun showTemporaryHint(message: String, durationMs: Long = 2_200L) {
         hintJob?.cancel()
         statusHintFlow.value = message
         hintJob = scope.launch {
-            delay(2_200L)
+            delay(durationMs)
             statusHintFlow.value = null
         }
     }

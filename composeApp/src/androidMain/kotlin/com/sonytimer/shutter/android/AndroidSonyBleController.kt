@@ -19,16 +19,25 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
+import android.util.Log
+import com.sonytimer.shutter.android.SonyBleWritePolicy.GattWriteOutcome
 import com.sonytimer.shutter.controller.BleConnectionState
 import com.sonytimer.shutter.controller.CameraBleController
 import com.sonytimer.shutter.controller.DiscoveredCamera
 import com.sonytimer.shutter.protocol.SonyBleProtocol
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -36,7 +45,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 
 /**
- * Android 端索尼相机 BLE GATT 遥控控制器（支持 A7C II / ILCE-7CM2 等索尼 Alpha 系列）。
+ * Android 端索尼相机 BLE GATT 遥控控制器（支持 A7C II / ILCE-7CM2 等索尼 Alpha 系列，
+ * 针对 HarmonyOS / 卓易通及 Android 13+ 新蓝牙栈做了串行化与写模式自适应）。
  */
 @SuppressLint("MissingPermission")
 class AndroidSonyBleController(
@@ -50,6 +60,9 @@ class AndroidSonyBleController(
         appContext.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
     private val bluetoothAdapter: BluetoothAdapter?
         get() = bluetoothManager?.adapter
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var connectionJob: Job? = null
 
     private val _connectionState = MutableStateFlow<BleConnectionState>(BleConnectionState.Disconnected)
     override val connectionState: StateFlow<BleConnectionState> = _connectionState.asStateFlow()
@@ -65,12 +78,24 @@ class AndroidSonyBleController(
     private var activeGatt: BluetoothGatt? = null
     private var commandCharacteristic: BluetoothGattCharacteristic? = null
     private var pendingBondDevice: BluetoothDevice? = null
+    private var lastConnectedDevice: BluetoothDevice? = null
 
     private val writeMutex = Mutex()
     @Volatile
-    private var pendingWriteResult: CompletableDeferred<Boolean>? = null
+    private var pendingDescriptorResult: CompletableDeferred<Int>? = null
+    @Volatile
+    private var pendingWriteResult: CompletableDeferred<Int>? = null
     @Volatile
     private var focusAcquiredSignal: CompletableDeferred<Boolean>? = null
+    @Volatile
+    private var bondCompleteSignal: CompletableDeferred<Boolean>? = null
+
+    @Volatile
+    private var preferredWriteType: Int? = null
+    @Volatile
+    private var cccdWriteTimedOut: Boolean = false
+    @Volatile
+    private var skipCccdOnNextConnect: Boolean = false
 
     private val serviceUuid = UUID.fromString(SonyBleProtocol.SERVICE_REMOTE_CONTROL_UUID)
     private val commandUuid = UUID.fromString(SonyBleProtocol.CHAR_REMOTE_COMMAND_UUID)
@@ -89,17 +114,33 @@ class AndroidSonyBleController(
                 intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
             } ?: return
 
-            if (device.address != pendingBondDevice?.address) return
+            val isTarget = device.address == pendingBondDevice?.address ||
+                device.address == activeGatt?.device?.address
+            if (!isTarget) return
 
             val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)
+            Log.d(TAG, "Bond state changed for ${device.address}: state=$state")
             when (state) {
                 BluetoothDevice.BOND_BONDED -> {
-                    pendingBondDevice = null
-                    connectGattInternal(device)
+                    bondCompleteSignal?.complete(true)
+                    bondCompleteSignal = null
+                    if (device.address == pendingBondDevice?.address) {
+                        pendingBondDevice = null
+                        connectionJob?.cancel()
+                        connectionJob = scope.launch {
+                            // 鸿蒙/部分机型刚完成配对时加密密钥尚未就绪，稍作等待再发起 GATT 连接
+                            delay(350L)
+                            connectGattInternal(device)
+                        }
+                    }
                 }
                 BluetoothDevice.BOND_NONE -> {
-                    pendingBondDevice = null
-                    _connectionState.value = BleConnectionState.Error("配对未完成，请在相机屏幕确认")
+                    bondCompleteSignal?.complete(false)
+                    bondCompleteSignal = null
+                    if (device.address == pendingBondDevice?.address) {
+                        pendingBondDevice = null
+                        _connectionState.value = BleConnectionState.Error("配对未完成，请在相机屏幕确认")
+                    }
                 }
             }
         }
@@ -136,7 +177,17 @@ class AndroidSonyBleController(
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            if (gatt !== activeGatt) {
+                Log.w(TAG, "Ignoring stale onConnectionStateChange status=$status newState=$newState")
+                runCatching {
+                    gatt.disconnect()
+                    gatt.close()
+                }
+                return
+            }
+
             val camName = gatt.device.name ?: "Sony Camera"
+            Log.d(TAG, "onConnectionStateChange: status=$status newState=$newState bondState=${gatt.device.bondState}")
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 closeGattInternal()
                 _connectionState.value = BleConnectionState.Error("连接断开 (status=$status)")
@@ -146,7 +197,26 @@ class AndroidSonyBleController(
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     _connectionState.value = BleConnectionState.Connecting(camName)
-                    gatt.discoverServices()
+                    connectionJob?.cancel()
+                    connectionJob = scope.launch {
+                        if (gatt.device.bondState == BluetoothDevice.BOND_BONDING) {
+                            Log.d(TAG, "Waiting for ongoing bonding before discoverServices")
+                            waitForBonding(10_000L)
+                        }
+                        // 给鸿蒙/卓易通蓝牙栈与相机预留链路稳定窗口再发现服务
+                        delay(300L)
+                        if (gatt !== activeGatt) return@launch
+                        var started = runCatching { gatt.discoverServices() }.getOrDefault(false)
+                        if (!started) {
+                            delay(300L)
+                            if (gatt !== activeGatt) return@launch
+                            started = runCatching { gatt.discoverServices() }.getOrDefault(false)
+                        }
+                        if (!started && gatt === activeGatt) {
+                            closeGattInternal()
+                            _connectionState.value = BleConnectionState.Error("启动服务发现失败")
+                        }
+                    }
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     closeGattInternal()
@@ -156,9 +226,11 @@ class AndroidSonyBleController(
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            if (gatt !== activeGatt) return
+            Log.d(TAG, "onServicesDiscovered: status=$status")
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 closeGattInternal()
-                _connectionState.value = BleConnectionState.Error("服务发现失败")
+                _connectionState.value = BleConnectionState.Error("服务发现失败 (status=$status)")
                 return
             }
 
@@ -173,28 +245,65 @@ class AndroidSonyBleController(
             }
 
             commandCharacteristic = cmdChar
-
-            // 订阅 0xFF02 相机状态通知（对焦/快门状态反馈）
-            if (notifyChar != null) {
-                gatt.setCharacteristicNotification(notifyChar, true)
-                val cccd = notifyChar.getDescriptor(cccdUuid)
-                if (cccd != null) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        gatt.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                        @Suppress("DEPRECATION")
-                        gatt.writeDescriptor(cccd)
-                    }
-                }
-            }
+            lastConnectedDevice = gatt.device
+            Log.d(TAG, "RemoteCommand char discovered: props=0x${cmdChar.properties.toString(16)}, notifyProps=${notifyChar?.properties}")
 
             val camName = gatt.device.name ?: "Sony Camera"
-            _connectionState.value = BleConnectionState.Connected(
-                cameraName = camName,
-                address = gatt.device.address
-            )
+            connectionJob?.cancel()
+            connectionJob = scope.launch {
+                // 等待服务发现后的内部状态机安定，避免立刻写 CCCD 触发 201 BUSY
+                delay(150L)
+                if (gatt !== activeGatt) return@launch
+
+                if (notifyChar != null && !skipCccdOnNextConnect) {
+                    val outcome = enableNotifications(gatt, notifyChar)
+                    if (outcome is GattWriteOutcome.Failed) {
+                        if (outcome.stage == "callback" && outcome.code != null &&
+                            SonyBleWritePolicy.isAuthErrorStatus(outcome.code)
+                        ) {
+                            Log.w(TAG, "CCCD write auth failure status=${outcome.code}, attempting bond recovery")
+                            val recovered = recoverAuthentication(gatt.device)
+                            val retryOutcome = if (recovered && gatt === activeGatt) {
+                                enableNotifications(gatt, notifyChar)
+                            } else {
+                                outcome
+                            }
+                            if (retryOutcome is GattWriteOutcome.Failed &&
+                                retryOutcome.stage == "callback" &&
+                                retryOutcome.code != null &&
+                                SonyBleWritePolicy.isAuthErrorStatus(retryOutcome.code)
+                            ) {
+                                closeGattInternal()
+                                _connectionState.value = BleConnectionState.Error(
+                                    "蓝牙未完成配对加密，请在系统蓝牙取消配对后重新配对"
+                                )
+                                return@launch
+                            }
+                        } else if (outcome.stage == "timeout") {
+                            cccdWriteTimedOut = true
+                            Log.w(TAG, "CCCD write timed out; continuing to Connected (notify optional)")
+                        } else {
+                            Log.w(TAG, "CCCD write non-fatal failure: $outcome")
+                        }
+                    }
+                }
+
+                if (gatt !== activeGatt) return@launch
+                _connectionState.value = BleConnectionState.Connected(
+                    cameraName = camName,
+                    address = gatt.device.address
+                )
+            }
+        }
+
+        override fun onDescriptorWrite(
+            gatt: BluetoothGatt,
+            descriptor: BluetoothGattDescriptor,
+            status: Int
+        ) {
+            if (gatt !== activeGatt) return
+            Log.d(TAG, "onDescriptorWrite: uuid=${descriptor.uuid} status=$status")
+            pendingDescriptorResult?.complete(status)
         }
 
         override fun onCharacteristicWrite(
@@ -202,7 +311,9 @@ class AndroidSonyBleController(
             characteristic: BluetoothGattCharacteristic,
             status: Int
         ) {
-            pendingWriteResult?.complete(status == BluetoothGatt.GATT_SUCCESS)
+            if (gatt !== activeGatt || characteristic.uuid != commandUuid) return
+            Log.d(TAG, "onCharacteristicWrite: status=$status")
+            pendingWriteResult?.complete(status)
         }
 
         override fun onCharacteristicChanged(
@@ -210,6 +321,7 @@ class AndroidSonyBleController(
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray
         ) {
+            if (gatt !== activeGatt) return
             if (characteristic.uuid == notifyUuid) {
                 handleNotify(value)
             }
@@ -220,6 +332,7 @@ class AndroidSonyBleController(
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic
         ) {
+            if (gatt !== activeGatt) return
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU && characteristic.uuid == notifyUuid) {
                 characteristic.value?.let(::handleNotify)
             }
@@ -295,30 +408,51 @@ class AndroidSonyBleController(
 
         stopScan()
         closeGattInternal()
+        skipCccdOnNextConnect = false
+        preferredWriteType = null
+        cccdWriteTimedOut = false
 
         val device = runCatching { adapter.getRemoteDevice(camera.address) }.getOrNull() ?: run {
             _connectionState.value = BleConnectionState.Error("无效的相机地址")
             return
         }
 
-        if (device.bondState == BluetoothDevice.BOND_BONDED) {
-            connectGattInternal(device)
-        } else {
-            ensureBondReceiverRegistered()
-            pendingBondDevice = device
-            _connectionState.value = BleConnectionState.Pairing(camera.name)
-            val started = device.createBond()
-            if (!started) {
-                pendingBondDevice = null
-                _connectionState.value = BleConnectionState.Error("发起配对失败，请确认相机处于配对界面")
+        ensureBondReceiverRegistered()
+        when (device.bondState) {
+            BluetoothDevice.BOND_BONDED -> {
+                connectGattInternal(device)
+            }
+            BluetoothDevice.BOND_BONDING -> {
+                pendingBondDevice = device
+                _connectionState.value = BleConnectionState.Pairing(camera.name)
+            }
+            else -> {
+                pendingBondDevice = device
+                _connectionState.value = BleConnectionState.Pairing(camera.name)
+                val started = runCatching { device.createBond() }.getOrDefault(false)
+                if (!started) {
+                    pendingBondDevice = null
+                    _connectionState.value = BleConnectionState.Error("发起配对失败，请确认相机处于配对界面")
+                }
             }
         }
     }
 
     override fun disconnect() {
         pendingBondDevice = null
+        skipCccdOnNextConnect = false
         closeGattInternal()
         _connectionState.value = BleConnectionState.Disconnected
+    }
+
+    private enum class ShutterStep(val label: String) {
+        HALF_DOWN("半按对焦指令写入"),
+        FULL_DOWN("快门触发指令写入")
+    }
+
+    private sealed interface ShutterAttemptResult {
+        data object Success : ShutterAttemptResult
+        data class Failure(val step: ShutterStep, val outcome: GattWriteOutcome.Failed) : ShutterAttemptResult
     }
 
     override suspend fun triggerShutter(): Result<Unit> {
@@ -329,69 +463,404 @@ class AndroidSonyBleController(
             return Result.failure(IllegalStateException("蓝牙通道未就绪"))
         }
 
+        val firstAttempt = executeShutterSequenceLocked()
+        if (firstAttempt is ShutterAttemptResult.Success) {
+            return Result.success(Unit)
+        }
+
+        val failed = firstAttempt as ShutterAttemptResult.Failure
+        val shouldAutoRecover = failed.step == ShutterStep.HALF_DOWN &&
+            cccdWriteTimedOut &&
+            failed.outcome.stage == "init" &&
+            (failed.outcome.code == SonyBleWritePolicy.STATUS_WRITE_REQUEST_BUSY || failed.outcome.code == null) &&
+            !skipCccdOnNextConnect
+
+        if (shouldAutoRecover) {
+            val device = lastConnectedDevice ?: activeGatt?.device
+            if (device != null && reconnectWithoutCccd(device)) {
+                val retryAttempt = executeShutterSequenceLocked()
+                if (retryAttempt is ShutterAttemptResult.Success) {
+                    return Result.success(Unit)
+                }
+                val retryFailed = retryAttempt as ShutterAttemptResult.Failure
+                return Result.failure(
+                    IllegalStateException(
+                        SonyBleWritePolicy.formatWriteFailureMessage(retryFailed.step.label, retryFailed.outcome)
+                    )
+                )
+            }
+        }
+
+        return Result.failure(
+            IllegalStateException(
+                SonyBleWritePolicy.formatWriteFailureMessage(failed.step.label, failed.outcome)
+            )
+        )
+    }
+
+    private suspend fun executeShutterSequenceLocked(): ShutterAttemptResult {
         return writeMutex.withLock {
             val focusWaiter = CompletableDeferred<Boolean>()
             focusAcquiredSignal = focusWaiter
+            var halfPressed = false
+            var fullPressed = false
 
             try {
                 // 1. 半按对焦 (0x01 0x07)
-                if (!writePacketLocked(SonyBleProtocol.CMD_SHUTTER_HALF_DOWN)) {
-                    return@withLock Result.failure(IllegalStateException("半按对焦指令写入失败"))
+                val halfOutcome = writePacketLocked(SonyBleProtocol.CMD_SHUTTER_HALF_DOWN)
+                if (halfOutcome is GattWriteOutcome.Failed) {
+                    Log.w(TAG, "Half-press write failed: $halfOutcome")
+                    return@withLock ShutterAttemptResult.Failure(ShutterStep.HALF_DOWN, halfOutcome)
                 }
+                halfPressed = true
 
                 // 等待相机 0xFF02 返回对焦成功，若处于 MF 或超时 450ms 则直接继续按下快门
                 withTimeoutOrNull(450L) { focusWaiter.await() }
 
                 // 2. 全按快门 (0x01 0x09)
-                if (!writePacketLocked(SonyBleProtocol.CMD_SHUTTER_FULL_DOWN)) {
-                    return@withLock Result.failure(IllegalStateException("快门触发指令写入失败"))
+                val fullOutcome = writePacketLocked(SonyBleProtocol.CMD_SHUTTER_FULL_DOWN)
+                if (fullOutcome is GattWriteOutcome.Failed) {
+                    Log.w(TAG, "Full-press write failed: $fullOutcome")
+                    return@withLock ShutterAttemptResult.Failure(ShutterStep.FULL_DOWN, fullOutcome)
                 }
+                fullPressed = true
                 delay(120L)
-                Result.success(Unit)
+                ShutterAttemptResult.Success
             } finally {
                 focusAcquiredSignal = null
-                // 3 & 4. 必须成对释放全按与半按，防止索尼相机锁死在半按状态
+                // 3 & 4. 仅在已成功下发对应按下指令时成对释放，避免失败后追加超时写入
                 withContext(NonCancellable) {
-                    runCatching { writePacketLocked(SonyBleProtocol.CMD_SHUTTER_FULL_UP) }
-                    delay(60L)
-                    runCatching { writePacketLocked(SonyBleProtocol.CMD_SHUTTER_HALF_UP) }
+                    if (fullPressed) {
+                        runCatching { writePacketLocked(SonyBleProtocol.CMD_SHUTTER_FULL_UP) }
+                    }
+                    if (fullPressed && halfPressed) {
+                        delay(60L)
+                    }
+                    if (halfPressed) {
+                        runCatching { writePacketLocked(SonyBleProtocol.CMD_SHUTTER_HALF_UP) }
+                    }
                 }
             }
         }
     }
 
-    private suspend fun writePacketLocked(payload: ByteArray): Boolean {
-        val gatt = activeGatt ?: return false
-        val char = commandCharacteristic ?: return false
+    private suspend fun reconnectWithoutCccd(device: BluetoothDevice): Boolean {
+        Log.w(TAG, "Reconnecting without CCCD subscription to recover from stuck GATT queue")
+        closeGattInternal()
+        skipCccdOnNextConnect = true
+        connectGattInternal(device)
+        val terminalState = withTimeoutOrNull(6_000L) {
+            _connectionState.first { state ->
+                state is BleConnectionState.Connected ||
+                    state is BleConnectionState.Error ||
+                    state is BleConnectionState.Disconnected
+            }
+        }
+        return terminalState is BleConnectionState.Connected
+    }
 
-        val deferred = CompletableDeferred<Boolean>()
+    private suspend fun enableNotifications(
+        gatt: BluetoothGatt,
+        notifyChar: BluetoothGattCharacteristic
+    ): GattWriteOutcome {
+        val localNotifyOk = runCatching {
+            gatt.setCharacteristicNotification(notifyChar, true)
+        }.getOrDefault(false)
+        if (!localNotifyOk) {
+            Log.w(TAG, "setCharacteristicNotification(true) returned false")
+        }
+
+        val cccd = notifyChar.getDescriptor(cccdUuid) ?: return GattWriteOutcome.Success
+        val enableValue = when {
+            (notifyChar.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0 ->
+                BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            (notifyChar.properties and BluetoothGattCharacteristic.PROPERTY_INDICATE) != 0 ->
+                BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+            else -> {
+                Log.d(TAG, "Notify characteristic has neither NOTIFY nor INDICATE property: 0x${notifyChar.properties.toString(16)}")
+                return GattWriteOutcome.Success
+            }
+        }
+
+        return writeDescriptorWithRetry(gatt, cccd, enableValue)
+    }
+
+    private suspend fun writeDescriptorWithRetry(
+        gatt: BluetoothGatt,
+        descriptor: BluetoothGattDescriptor,
+        value: ByteArray
+    ): GattWriteOutcome {
+        val retryDelays = longArrayOf(120L, 250L)
+        for (attempt in 0..retryDelays.size) {
+            if (gatt !== activeGatt) return GattWriteOutcome.Failed("disconnected")
+            val outcome = writeDescriptorOnce(gatt, descriptor, value)
+            if (outcome is GattWriteOutcome.Success) return outcome
+
+            val failed = outcome as GattWriteOutcome.Failed
+            val isBusy = failed.stage == "init" && SonyBleWritePolicy.isBusyInitFailure(
+                isApi33Plus = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU,
+                initCode = failed.code
+            )
+            if (isBusy && attempt < retryDelays.size) {
+                Log.w(TAG, "writeDescriptor busy (attempt=${attempt + 1}), retrying in ${retryDelays[attempt]}ms")
+                delay(retryDelays[attempt])
+                continue
+            }
+            return failed
+        }
+        return GattWriteOutcome.Failed("init", SonyBleWritePolicy.STATUS_WRITE_REQUEST_BUSY)
+    }
+
+    private suspend fun writeDescriptorOnce(
+        gatt: BluetoothGatt,
+        descriptor: BluetoothGattDescriptor,
+        value: ByteArray
+    ): GattWriteOutcome {
+        val deferred = CompletableDeferred<Int>()
+        pendingDescriptorResult = deferred
+
+        val initOutcome = initiateDescriptorWrite(gatt, descriptor, value)
+        if (initOutcome != null) {
+            pendingDescriptorResult = null
+            return initOutcome
+        }
+
+        val status = withTimeoutOrNull(2_000L) { deferred.await() }
+        pendingDescriptorResult = null
+        return when {
+            status == null -> GattWriteOutcome.Failed("timeout")
+            status == BluetoothGatt.GATT_SUCCESS -> GattWriteOutcome.Success
+            else -> GattWriteOutcome.Failed("callback", status)
+        }
+    }
+
+    private fun initiateDescriptorWrite(
+        gatt: BluetoothGatt,
+        descriptor: BluetoothGattDescriptor,
+        value: ByteArray
+    ): GattWriteOutcome.Failed? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val code = try {
+                gatt.writeDescriptor(descriptor, value)
+            } catch (e: SecurityException) {
+                Log.e(TAG, "writeDescriptor SecurityException", e)
+                return GattWriteOutcome.Failed("permission", detail = e.message.orEmpty())
+            } catch (t: Throwable) {
+                Log.e(TAG, "writeDescriptor threw exception", t)
+                null
+            }
+
+            if (code == BluetoothStatusCodes.SUCCESS) return null
+            if (code == SonyBleWritePolicy.STATUS_MISSING_PERMISSION) {
+                return GattWriteOutcome.Failed("permission", code)
+            }
+            if (code == null || SonyBleWritePolicy.shouldTryLegacyApiFallback(code)) {
+                Log.w(TAG, "writeDescriptor(desc, val) returned code=$code, trying legacy writeDescriptor(desc)")
+                val legacyOk = runLegacyDescriptorWrite(gatt, descriptor, value)
+                if (legacyOk) return null
+            }
+            return GattWriteOutcome.Failed("init", code)
+        } else {
+            val legacyOk = runLegacyDescriptorWrite(gatt, descriptor, value)
+            return if (legacyOk) null else GattWriteOutcome.Failed("init", null)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun runLegacyDescriptorWrite(
+        gatt: BluetoothGatt,
+        descriptor: BluetoothGattDescriptor,
+        value: ByteArray
+    ): Boolean {
+        return try {
+            descriptor.value = value
+            gatt.writeDescriptor(descriptor)
+        } catch (t: Throwable) {
+            Log.e(TAG, "legacy writeDescriptor failed", t)
+            false
+        }
+    }
+
+    private suspend fun writePacketLocked(payload: ByteArray): GattWriteOutcome {
+        val gatt = activeGatt ?: return GattWriteOutcome.Failed("disconnected")
+        val char = gatt.getService(serviceUuid)?.getCharacteristic(commandUuid)
+            ?: commandCharacteristic
+            ?: return GattWriteOutcome.Failed("disconnected")
+        commandCharacteristic = char
+
+        val candidates = SonyBleWritePolicy.resolveCandidateWriteTypes(
+            properties = char.properties,
+            preferredWriteType = preferredWriteType
+        )
+        Log.d(TAG, "writePacketLocked: charProps=0x${char.properties.toString(16)}, candidates=$candidates")
+
+        var lastFailure: GattWriteOutcome.Failed = GattWriteOutcome.Failed("unknown")
+        for (writeType in candidates) {
+            var outcome = writeWithBusyRetry(gatt, char, payload, writeType)
+            if (outcome is GattWriteOutcome.Failed &&
+                outcome.stage == "callback" &&
+                outcome.code != null &&
+                SonyBleWritePolicy.isAuthErrorStatus(outcome.code)
+            ) {
+                Log.w(TAG, "Characteristic write auth error status=${outcome.code}, attempting bond recovery")
+                if (recoverAuthentication(gatt.device)) {
+                    outcome = writeWithBusyRetry(gatt, char, payload, writeType)
+                }
+            }
+
+            if (outcome is GattWriteOutcome.Success) {
+                preferredWriteType = writeType
+                return outcome
+            }
+
+            lastFailure = outcome as GattWriteOutcome.Failed
+            if (!SonyBleWritePolicy.shouldTryNextWriteType(lastFailure)) {
+                break
+            }
+            Log.w(TAG, "WriteType $writeType failed ($lastFailure), trying next candidate if available")
+        }
+        return lastFailure
+    }
+
+    private suspend fun writeWithBusyRetry(
+        gatt: BluetoothGatt,
+        char: BluetoothGattCharacteristic,
+        payload: ByteArray,
+        writeType: Int
+    ): GattWriteOutcome {
+        val retryDelays = longArrayOf(120L, 250L, 400L)
+        for (attempt in 0..retryDelays.size) {
+            if (gatt !== activeGatt) return GattWriteOutcome.Failed("disconnected", writeType = writeType)
+
+            val outcome = writeOnceWithType(gatt, char, payload, writeType)
+            if (outcome is GattWriteOutcome.Success) return outcome
+
+            val failed = outcome as GattWriteOutcome.Failed
+            val isBusy = failed.stage == "init" && SonyBleWritePolicy.isBusyInitFailure(
+                isApi33Plus = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU,
+                initCode = failed.code
+            )
+            if (isBusy && attempt < retryDelays.size) {
+                Log.w(TAG, "writeCharacteristic busy (type=$writeType, attempt=${attempt + 1}), retrying in ${retryDelays[attempt]}ms")
+                delay(retryDelays[attempt])
+                continue
+            }
+            return failed
+        }
+        return GattWriteOutcome.Failed("init", SonyBleWritePolicy.STATUS_WRITE_REQUEST_BUSY, writeType)
+    }
+
+    private suspend fun writeOnceWithType(
+        gatt: BluetoothGatt,
+        char: BluetoothGattCharacteristic,
+        payload: ByteArray,
+        writeType: Int
+    ): GattWriteOutcome {
+        val deferred = CompletableDeferred<Int>()
         pendingWriteResult = deferred
 
-        val initiated = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            gatt.writeCharacteristic(
-                char,
-                payload,
-                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-            ) == BluetoothStatusCodes.SUCCESS
-        } else {
-            @Suppress("DEPRECATION")
-            char.value = payload
-            char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-            @Suppress("DEPRECATION")
-            gatt.writeCharacteristic(char)
-        }
-
-        if (!initiated) {
+        val initFailure = initiateCharacteristicWrite(gatt, char, payload, writeType)
+        if (initFailure != null) {
             pendingWriteResult = null
-            return false
+            return initFailure
         }
 
-        val ok = withTimeoutOrNull(2_000L) { deferred.await() } ?: false
+        val status = withTimeoutOrNull(2_500L) { deferred.await() }
         pendingWriteResult = null
-        return ok
+        return when {
+            status == null -> GattWriteOutcome.Failed("timeout", writeType = writeType)
+            status == BluetoothGatt.GATT_SUCCESS -> GattWriteOutcome.Success
+            else -> GattWriteOutcome.Failed("callback", status, writeType)
+        }
+    }
+
+    private fun initiateCharacteristicWrite(
+        gatt: BluetoothGatt,
+        char: BluetoothGattCharacteristic,
+        payload: ByteArray,
+        writeType: Int
+    ): GattWriteOutcome.Failed? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val code = try {
+                gatt.writeCharacteristic(char, payload, writeType)
+            } catch (e: SecurityException) {
+                Log.e(TAG, "writeCharacteristic SecurityException", e)
+                return GattWriteOutcome.Failed("permission", writeType = writeType, detail = e.message.orEmpty())
+            } catch (t: Throwable) {
+                Log.e(TAG, "writeCharacteristic(3-arg) threw exception", t)
+                null
+            }
+
+            if (code == BluetoothStatusCodes.SUCCESS) return null
+            if (code == SonyBleWritePolicy.STATUS_MISSING_PERMISSION) {
+                return GattWriteOutcome.Failed("permission", code, writeType)
+            }
+            if (code == null || SonyBleWritePolicy.shouldTryLegacyApiFallback(code)) {
+                Log.w(TAG, "writeCharacteristic(3-arg, type=$writeType) returned code=$code, trying legacy 1-arg API")
+                val legacyResult = runLegacyCharacteristicWrite(gatt, char, payload, writeType)
+                if (legacyResult == null) return null
+            }
+            return GattWriteOutcome.Failed("init", code, writeType)
+        } else {
+            return runLegacyCharacteristicWrite(gatt, char, payload, writeType)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun runLegacyCharacteristicWrite(
+        gatt: BluetoothGatt,
+        char: BluetoothGattCharacteristic,
+        payload: ByteArray,
+        writeType: Int
+    ): GattWriteOutcome.Failed? {
+        return try {
+            char.value = payload
+            char.writeType = writeType
+            if (gatt.writeCharacteristic(char)) {
+                null
+            } else {
+                GattWriteOutcome.Failed("init", null, writeType)
+            }
+        } catch (e: SecurityException) {
+            GattWriteOutcome.Failed("permission", writeType = writeType, detail = e.message.orEmpty())
+        } catch (t: Throwable) {
+            GattWriteOutcome.Failed("init", writeType = writeType, detail = t.message.orEmpty())
+        }
+    }
+
+    private suspend fun waitForBonding(timeoutMs: Long): Boolean {
+        val waiter = CompletableDeferred<Boolean>()
+        bondCompleteSignal = waiter
+        val result = withTimeoutOrNull(timeoutMs) { waiter.await() } ?: false
+        bondCompleteSignal = null
+        return result
+    }
+
+    private suspend fun recoverAuthentication(device: BluetoothDevice): Boolean {
+        return when (device.bondState) {
+            BluetoothDevice.BOND_BONDING -> waitForBonding(10_000L)
+            BluetoothDevice.BOND_NONE -> {
+                ensureBondReceiverRegistered()
+                val waiter = CompletableDeferred<Boolean>()
+                bondCompleteSignal = waiter
+                val started = runCatching { device.createBond() }.getOrDefault(false)
+                if (!started) {
+                    bondCompleteSignal = null
+                    false
+                } else {
+                    val bonded = withTimeoutOrNull(10_000L) { waiter.await() } ?: false
+                    bondCompleteSignal = null
+                    if (bonded) delay(300L)
+                    bonded
+                }
+            }
+            else -> false
+        }
     }
 
     private fun connectGattInternal(device: BluetoothDevice) {
+        ensureBondReceiverRegistered()
+        lastConnectedDevice = device
         _connectionState.value = BleConnectionState.Connecting(device.name ?: "Sony Camera")
         activeGatt = device.connectGatt(
             appContext,
@@ -402,16 +871,25 @@ class AndroidSonyBleController(
     }
 
     private fun closeGattInternal() {
-        pendingWriteResult?.complete(false)
+        connectionJob?.cancel()
+        connectionJob = null
+        pendingDescriptorResult?.complete(SonyBleWritePolicy.GATT_ERROR)
+        pendingDescriptorResult = null
+        pendingWriteResult?.complete(SonyBleWritePolicy.GATT_ERROR)
         pendingWriteResult = null
         focusAcquiredSignal?.complete(false)
         focusAcquiredSignal = null
+        bondCompleteSignal?.complete(false)
+        bondCompleteSignal = null
         commandCharacteristic = null
-        runCatching {
-            activeGatt?.disconnect()
-            activeGatt?.close()
-        }
+        preferredWriteType = null
+        cccdWriteTimedOut = false
+        val gattToClose = activeGatt
         activeGatt = null
+        runCatching {
+            gattToClose?.disconnect()
+            gattToClose?.close()
+        }
     }
 
     private fun ensureBondReceiverRegistered() {
@@ -446,10 +924,16 @@ class AndroidSonyBleController(
 
     override fun release() {
         stopScan()
+        skipCccdOnNextConnect = false
         closeGattInternal()
+        scope.cancel()
         if (bondReceiverRegistered) {
             runCatching { appContext.unregisterReceiver(bondReceiver) }
             bondReceiverRegistered = false
         }
+    }
+
+    private companion object {
+        const val TAG = "SonyBleController"
     }
 }
