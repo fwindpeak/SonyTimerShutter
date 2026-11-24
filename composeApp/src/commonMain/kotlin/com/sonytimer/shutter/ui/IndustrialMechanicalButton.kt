@@ -1,0 +1,380 @@
+package com.sonytimer.shutter.ui
+
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.sonytimer.shutter.controller.BleConnectionState
+import com.sonytimer.shutter.controller.ShutterPhase
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
+
+/**
+ * 工业感复古机械大按钮：
+ * - 拉丝铸铁/阳极氧化铝底座面板 + 四角沉头一字/内六角工业螺丝
+ * - 车削滚花钢制防护护圈 + 嵌入式环形状态指示灯
+ * - 复古暗红电木/烤漆内凹大键帽 + 真实按压行程、阴影压缩与高光衰减
+ * - 短按：开始倒计时 / 倒计时中短按取消；长按：静默呼出隐藏的秒数调节面板
+ */
+@Composable
+fun IndustrialMechanicalButton(
+    connectionState: BleConnectionState,
+    phase: ShutterPhase,
+    configuredSeconds: Int,
+    onClick: () -> Unit,
+    onLongPress: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var isFingerDown by remember { mutableStateOf(false) }
+
+    val isPressedVisual = isFingerDown || phase is ShutterPhase.Triggering
+    val pressProgress by animateFloatAsState(
+        targetValue = if (isPressedVisual) 1f else 0f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMedium
+        ),
+        label = "mechanicalPress"
+    )
+
+    val countdownSweep by animateFloatAsState(
+        targetValue = when (phase) {
+            is ShutterPhase.CountingDown -> phase.remainingSeconds.toFloat() / phase.totalSeconds.coerceAtLeast(1)
+            is ShutterPhase.Triggering, is ShutterPhase.ShotSuccess -> 0f
+            is ShutterPhase.Idle -> if (connectionState is BleConnectionState.Connected) 1f else 0f
+        },
+        animationSpec = tween(durationMillis = 260),
+        label = "ledSweep"
+    )
+
+    val ledColor = when {
+        phase is ShutterPhase.ShotSuccess -> Color(0xFF4ADE80)
+        phase is ShutterPhase.Triggering -> Color(0xFFFFB020)
+        phase is ShutterPhase.CountingDown -> Color(0xFFFF5A36)
+        connectionState is BleConnectionState.Connected -> Color(0xFF34D399)
+        connectionState is BleConnectionState.Connecting || connectionState is BleConnectionState.Pairing -> Color(0xFFF59E0B)
+        else -> Color(0xFF4B5563)
+    }
+
+    Box(
+        modifier = modifier
+            .size(308.dp)
+            .pointerInput(phase, connectionState) {
+                detectTapGestures(
+                    onPress = {
+                        isFingerDown = true
+                        tryAwaitRelease()
+                        isFingerDown = false
+                    },
+                    onTap = { onClick() },
+                    onLongPress = { onLongPress() }
+                )
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(modifier = Modifier.size(308.dp)) {
+            val w = size.width
+            val h = size.height
+            val center = Offset(w / 2f, h / 2f)
+
+            // 1. 工业铸铝方型面板外阴影
+            drawRoundRect(
+                color = Color.Black.copy(alpha = 0.65f),
+                topLeft = Offset(10.dp.toPx(), 16.dp.toPx()),
+                size = Size(w - 20.dp.toPx(), h - 20.dp.toPx()),
+                cornerRadius = CornerRadius(34.dp.toPx())
+            )
+
+            // 2. 拉丝枪灰金属面板主体
+            val plateInset = 10.dp.toPx()
+            val plateSize = Size(w - plateInset * 2, h - plateInset * 2)
+            drawRoundRect(
+                brush = Brush.linearGradient(
+                    colors = listOf(
+                        Color(0xFF383C42),
+                        Color(0xFF25282D),
+                        Color(0xFF1D2024),
+                        Color(0xFF2B2F36)
+                    ),
+                    start = Offset(0f, 0f),
+                    end = Offset(w, h)
+                ),
+                topLeft = Offset(plateInset, plateInset),
+                size = plateSize,
+                cornerRadius = CornerRadius(32.dp.toPx())
+            )
+
+            // 面板倒角高光描边
+            drawRoundRect(
+                brush = Brush.linearGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.22f),
+                        Color.White.copy(alpha = 0.04f),
+                        Color.Black.copy(alpha = 0.55f)
+                    ),
+                    start = Offset(plateInset, plateInset),
+                    end = Offset(w - plateInset, h - plateInset)
+                ),
+                topLeft = Offset(plateInset, plateInset),
+                size = plateSize,
+                cornerRadius = CornerRadius(32.dp.toPx()),
+                style = Stroke(width = 1.6.dp.toPx())
+            )
+
+            // 四角复古沉头工业螺丝
+            val screwOffset = 34.dp.toPx()
+            val screwPositions = listOf(
+                Offset(screwOffset, screwOffset),
+                Offset(w - screwOffset, screwOffset),
+                Offset(screwOffset, h - screwOffset),
+                Offset(w - screwOffset, h - screwOffset)
+            )
+            screwPositions.forEachIndexed { idx, pos ->
+                drawIndustrialScrew(center = pos, radius = 9.dp.toPx(), slotAngleDeg = 35f + idx * 27f)
+            }
+
+            // 3. 车削滚花金属外护圈
+            val bezelRadius = 112.dp.toPx()
+            drawCircle(
+                color = Color.Black.copy(alpha = 0.72f),
+                radius = bezelRadius + 4.dp.toPx(),
+                center = center + Offset(0f, 5.dp.toPx())
+            )
+            drawCircle(
+                brush = Brush.linearGradient(
+                    colors = listOf(
+                        Color(0xFF6B7078),
+                        Color(0xFF2F3339),
+                        Color(0xFF1B1D21),
+                        Color(0xFF525760)
+                    ),
+                    start = Offset(center.x - bezelRadius, center.y - bezelRadius),
+                    end = Offset(center.x + bezelRadius, center.y + bezelRadius)
+                ),
+                radius = bezelRadius,
+                center = center
+            )
+
+            // 滚花防滑纹理刻线（60 齿）
+            val knurlInner = bezelRadius - 7.dp.toPx()
+            val knurlOuter = bezelRadius - 1.5.dp.toPx()
+            for (i in 0 until 60) {
+                val rad = (i * 6.0) * PI / 180.0
+                val cosA = cos(rad).toFloat()
+                val sinA = sin(rad).toFloat()
+                drawLine(
+                    color = if (i % 2 == 0) Color.Black.copy(alpha = 0.45f) else Color.White.copy(alpha = 0.14f),
+                    start = Offset(center.x + knurlInner * cosA, center.y + knurlInner * sinA),
+                    end = Offset(center.x + knurlOuter * cosA, center.y + knurlOuter * sinA),
+                    strokeWidth = 1.4.dp.toPx()
+                )
+            }
+
+            // 4. 按钮沉孔井道（黑色深槽）
+            val wellRadius = 96.dp.toPx()
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(Color(0xFF0A0B0D), Color(0xFF181A1E)),
+                    center = center,
+                    radius = wellRadius
+                ),
+                radius = wellRadius,
+                center = center
+            )
+
+            // 5. 嵌入式细环形 LED 指示灯（贴在护圈内沿）
+            val ledRadius = 100.dp.toPx()
+            drawCircle(
+                color = Color(0xFF101215),
+                radius = ledRadius,
+                center = center,
+                style = Stroke(width = 3.dp.toPx())
+            )
+            if (countdownSweep > 0f) {
+                drawArc(
+                    color = ledColor.copy(alpha = 0.28f),
+                    startAngle = -90f,
+                    sweepAngle = 360f * countdownSweep,
+                    useCenter = false,
+                    topLeft = Offset(center.x - ledRadius, center.y - ledRadius),
+                    size = Size(ledRadius * 2, ledRadius * 2),
+                    style = Stroke(width = 6.5.dp.toPx(), cap = StrokeCap.Round)
+                )
+                drawArc(
+                    color = ledColor,
+                    startAngle = -90f,
+                    sweepAngle = 360f * countdownSweep,
+                    useCenter = false,
+                    topLeft = Offset(center.x - ledRadius, center.y - ledRadius),
+                    size = Size(ledRadius * 2, ledRadius * 2),
+                    style = Stroke(width = 2.6.dp.toPx(), cap = StrokeCap.Round)
+                )
+            }
+
+            // 6. 复古机械大键帽（随按压下沉、阴影收缩、微缩放）
+            val travelY = pressProgress * 6.5.dp.toPx()
+            val capScale = 1f - pressProgress * 0.025f
+            val capRadius = 86.dp.toPx() * capScale
+            val capCenter = Offset(center.x, center.y - 3.dp.toPx() + travelY)
+
+            // 键帽底部立体裙边与投影
+            val skirtHeight = (1f - pressProgress) * 9.dp.toPx() + 2.dp.toPx()
+            drawCircle(
+                color = Color.Black.copy(alpha = 0.65f - pressProgress * 0.22f),
+                radius = capRadius + 2.dp.toPx(),
+                center = Offset(capCenter.x, capCenter.y + skirtHeight + 3.dp.toPx())
+            )
+            drawCircle(
+                brush = Brush.verticalGradient(
+                    colors = listOf(Color(0xFF6A1111), Color(0xFF3E0909)),
+                    startY = capCenter.y - capRadius,
+                    endY = capCenter.y + capRadius + skirtHeight
+                ),
+                radius = capRadius,
+                center = Offset(capCenter.x, capCenter.y + skirtHeight * 0.65f)
+            )
+
+            // 键帽顶面（复古工业暗红烤漆质感）
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        Color(0xFFD6302B),
+                        Color(0xFFB31F1B),
+                        Color(0xFF7D1210)
+                    ),
+                    center = Offset(capCenter.x - capRadius * 0.25f, capCenter.y - capRadius * 0.28f),
+                    radius = capRadius * 1.35f
+                ),
+                radius = capRadius,
+                center = capCenter
+            )
+
+            // 键帽内凹指腹槽（模拟真实物理机械按键的微凹手感）
+            val dishRadius = capRadius * 0.78f
+            drawCircle(
+                brush = Brush.linearGradient(
+                    colors = listOf(
+                        Color(0xFF6B0E0C).copy(alpha = 0.75f),
+                        Color(0xFFC92A25).copy(alpha = 0.35f),
+                        Color(0xFFFF8A80).copy(alpha = 0.20f)
+                    ),
+                    start = Offset(capCenter.x - dishRadius, capCenter.y - dishRadius),
+                    end = Offset(capCenter.x + dishRadius, capCenter.y + dishRadius)
+                ),
+                radius = dishRadius,
+                center = capCenter
+            )
+
+            // 顶部边缘高光弧（按下时衰减）
+            drawCircle(
+                brush = Brush.linearGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.32f * (1f - pressProgress * 0.45f)),
+                        Color.Transparent,
+                        Color.Black.copy(alpha = 0.35f)
+                    ),
+                    start = Offset(capCenter.x - capRadius, capCenter.y - capRadius),
+                    end = Offset(capCenter.x + capRadius, capCenter.y + capRadius)
+                ),
+                radius = capRadius - 1.dp.toPx(),
+                center = capCenter,
+                style = Stroke(width = 2.dp.toPx())
+            )
+        }
+
+        // 键帽中心刻字/倒计时数字（跟着按压行程同步位移）
+        val textOffsetY = (-3f + pressProgress * 6.5f)
+        val textScale = 1f - pressProgress * 0.025f
+        val labelText = when (phase) {
+            is ShutterPhase.CountingDown -> phase.remainingSeconds.toString()
+            is ShutterPhase.Triggering -> "●"
+            is ShutterPhase.ShotSuccess -> "✓"
+            is ShutterPhase.Idle -> "${configuredSeconds}S"
+        }
+        val labelSize = when (phase) {
+            is ShutterPhase.CountingDown -> 54.sp
+            is ShutterPhase.Triggering, is ShutterPhase.ShotSuccess -> 42.sp
+            is ShutterPhase.Idle -> 26.sp
+        }
+        val labelColor = when (phase) {
+            is ShutterPhase.CountingDown -> Color(0xFFFFF5EB)
+            is ShutterPhase.ShotSuccess -> Color(0xFFD1FAE5)
+            else -> Color(0xFFFDE8E8).copy(alpha = 0.72f)
+        }
+
+        Text(
+            text = labelText,
+            color = labelColor,
+            fontSize = labelSize,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace,
+            letterSpacing = if (phase is ShutterPhase.Idle) 2.sp else 0.sp,
+            modifier = Modifier.graphicsLayer {
+                translationY = textOffsetY * density
+                scaleX = textScale
+                scaleY = textScale
+            }
+        )
+    }
+}
+
+private fun DrawScope.drawIndustrialScrew(
+    center: Offset,
+    radius: Float,
+    slotAngleDeg: Float
+) {
+    // 螺丝沉孔阴影
+    drawCircle(
+        color = Color.Black.copy(alpha = 0.75f),
+        radius = radius + 1.5.dp.toPx(),
+        center = center + Offset(0f, 1.dp.toPx())
+    )
+    // 螺丝金属头
+    drawCircle(
+        brush = Brush.linearGradient(
+            colors = listOf(Color(0xFF646970), Color(0xFF282B30)),
+            start = center - Offset(radius, radius),
+            end = center + Offset(radius, radius)
+        ),
+        radius = radius,
+        center = center
+    )
+    // 一字槽口
+    val rad = slotAngleDeg * PI / 180.0
+    val dx = (radius * 0.68f * cos(rad)).toFloat()
+    val dy = (radius * 0.68f * sin(rad)).toFloat()
+    drawLine(
+        color = Color(0xFF121316),
+        start = Offset(center.x - dx, center.y - dy),
+        end = Offset(center.x + dx, center.y + dy),
+        strokeWidth = 2.dp.toPx(),
+        cap = StrokeCap.Round
+    )
+}
