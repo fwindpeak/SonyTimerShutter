@@ -1,0 +1,6 @@
+{
+  "usingComponents": {
+    "mechanical-button": "/components/mechanical-button/mechanical-button"
+  },
+  "disableScroll": true
+}

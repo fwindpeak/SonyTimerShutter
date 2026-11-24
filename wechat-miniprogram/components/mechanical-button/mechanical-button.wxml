@@ -1,0 +1,63 @@
+<view
+  class="mech-wrapper"
+  bindtouchstart="onTouchStart"
+  bindtouchend="onTouchEnd"
+  bindtouchcancel="onTouchCancel"
+  bindtap="onTap"
+>
+  <!-- 1. 工业铸铝方型面板外阴影 + 拉丝枪灰金属主体 + 倒角高光 -->
+  <view class="mech-plate-shadow"></view>
+  <view class="mech-plate">
+    <view class="mech-plate-bevel"></view>
+  </view>
+
+  <!-- 2. 四角复古沉头工业螺丝 -->
+  <view class="screw screw-tl"><view class="screw-slot screw-slot-tl"></view></view>
+  <view class="screw screw-tr"><view class="screw-slot screw-slot-tr"></view></view>
+  <view class="screw screw-bl"><view class="screw-slot screw-slot-bl"></view></view>
+  <view class="screw screw-br"><view class="screw-slot screw-slot-br"></view></view>
+
+  <!-- 3. 车削滚花金属外护圈 -->
+  <view class="mech-bezel-shadow"></view>
+  <view class="mech-bezel">
+    <view class="mech-knurl"></view>
+    <view class="mech-bezel-face"></view>
+  </view>
+
+  <!-- 4. 嵌入式环形 LED 状态指示灯（位于护圈内沿、沉孔外沿） -->
+  <view class="mech-led-track"></view>
+  <view
+    wx:if="{{sweepDeg > 0}}"
+    class="mech-led-glow"
+    style="background: {{ledGlowGradient}};"
+  ></view>
+  <view
+    wx:if="{{sweepDeg > 0}}"
+    class="mech-led-arc"
+    style="background: {{ledArcGradient}};"
+  ></view>
+
+  <!-- 5. 按钮沉孔井道（黑色深槽） -->
+  <view class="mech-well"></view>
+
+  <!-- 6. 复古机械大键帽 -->
+  <view class="mech-cap-group {{isPressed ? 'is-pressed' : ''}}">
+    <view class="mech-cap-shadow"></view>
+    <view class="mech-cap-skirt"></view>
+    <view class="mech-cap-top">
+      <view class="mech-cap-dish"></view>
+      <view class="mech-cap-rim"></view>
+      <view class="mech-label-wrap">
+        <text
+          class="mech-label mono {{labelSizeClass}}"
+          style="color: {{labelColor}};"
+        >{{labelText}}</text>
+        <text
+          wx:if="{{subLabelText}}"
+          class="mech-sublabel mono"
+          style="color: {{subLabelColor}};"
+        >{{subLabelText}}</text>
+      </view>
+    </view>
+  </view>
+</view>

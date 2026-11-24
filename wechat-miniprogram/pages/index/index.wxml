@@ -1,0 +1,213 @@
+<view class="page-root" style="padding-top: {{topSafePx}}px; padding-bottom: {{bottomSafePx}}px;">
+  <!-- 顶部：克制的蓝牙状态胶囊 -->
+  <view class="top-bar-wrap">
+    <view class="pill-btn" hover-class="pill-btn-hover" bindtap="onOpenCameraPicker">
+      <view class="status-dot" style="background-color: {{btDotColor}};"></view>
+      <image class="pill-icon" src="{{btIconSrc}}" mode="aspectFit" />
+      <text class="pill-label mono">{{btLabel}}</text>
+    </view>
+  </view>
+
+  <!-- 中央：工业感复古机械大按钮 -->
+  <view class="center-stage">
+    <mechanical-button
+      connection-type="{{connectionType}}"
+      phase-type="{{phaseType}}"
+      remaining-seconds="{{remainingSeconds}}"
+      total-seconds="{{totalSeconds}}"
+      current-shot="{{currentShot}}"
+      total-shots="{{totalShots}}"
+      is-interval="{{isInterval}}"
+      configured-seconds="{{configuredSeconds}}"
+      bind:press="onMainButtonTap"
+    />
+  </view>
+
+  <!-- 底部：临时反馈提示 + 极简拍摄参数胶囊 -->
+  <view class="bottom-bar-wrap">
+    <view class="hint-slot">
+      <text class="hint-text mono {{statusHint ? 'hint-visible' : 'hint-hidden'}}">{{statusHint || ''}}</text>
+    </view>
+
+    <view
+      class="pill-btn {{!configBarEnabled ? 'pill-disabled' : ''}}"
+      style="border-color: {{configBorderColor}};"
+      hover-class="{{configBarEnabled ? 'pill-btn-hover' : ''}}"
+      bindtap="onOpenTimerSheet"
+    >
+      <image class="pill-icon" src="{{sliderIconSrc}}" mode="aspectFit" />
+      <text class="pill-label mono">{{configLabel}}</text>
+      <text class="pill-chevron">›</text>
+    </view>
+  </view>
+
+  <!-- 拍摄参数设定弹窗 -->
+  <view class="sheet-mask" wx:if="{{showTimerSheet}}" bindtap="onDismissTimerSheet" catchtouchmove="noop">
+    <view class="sheet-panel" catchtap="noop">
+      <view class="sheet-handle"></view>
+      <scroll-view scroll-y class="sheet-scroll">
+        <view class="sheet-body timer-sheet-body">
+          <text class="sheet-title">拍摄参数设定</text>
+          <text class="sheet-subtitle">参数修改后自动保存</text>
+
+          <!-- 倒计时延时 -->
+          <view class="numeric-section">
+            <view class="section-header">
+              <text class="section-title">倒计时延时</text>
+              <text class="section-range mono">1~60秒</text>
+            </view>
+
+            <view class="stepper-row">
+              <view
+                class="step-btn {{configuredSeconds <= 1 ? 'step-btn-disabled' : ''}}"
+                bindtap="onStepTimer"
+                data-delta="-1"
+              >−</view>
+              <text class="stepper-value mono">{{configuredSeconds}}s</text>
+              <view
+                class="step-btn {{configuredSeconds >= 60 ? 'step-btn-disabled' : ''}}"
+                bindtap="onStepTimer"
+                data-delta="1"
+              >+</view>
+            </view>
+
+            <view class="preset-row">
+              <view
+                wx:for="{{timerPresets}}"
+                wx:key="*this"
+                class="preset-chip mono {{configuredSeconds === item ? 'preset-chip-active' : ''}}"
+                bindtap="onSelectTimerPreset"
+                data-value="{{item}}"
+              >{{item}}s</view>
+            </view>
+          </view>
+
+          <view class="divider"></view>
+
+          <!-- 连拍模式开关卡片 -->
+          <view
+            class="burst-card {{burstEnabled ? 'burst-card-active' : ''}}"
+            bindtap="onToggleBurst"
+          >
+            <view class="burst-card-text">
+              <text class="burst-title">连拍模式</text>
+              <text class="burst-desc">{{burstEnabled ? ('共 ' + burstCount + ' 张 · 每张间隔 ' + burstIntervalSeconds + 's') : '开启后可设置连拍张数与间隔时间'}}</text>
+            </view>
+            <view class="toggle-track {{burstEnabled ? 'toggle-track-on' : ''}}">
+              <view class="toggle-thumb {{burstEnabled ? 'toggle-thumb-on' : ''}}"></view>
+            </view>
+          </view>
+
+          <!-- 连拍明细参数 -->
+          <block wx:if="{{burstEnabled}}">
+            <view class="numeric-section burst-sub-section">
+              <view class="section-header">
+                <text class="section-title">连拍张数</text>
+                <text class="section-range mono">2~99张</text>
+              </view>
+
+              <view class="stepper-row">
+                <view
+                  class="step-btn {{burstCount <= 2 ? 'step-btn-disabled' : ''}}"
+                  bindtap="onStepBurstCount"
+                  data-delta="-1"
+                >−</view>
+                <text class="stepper-value mono">{{burstCount}}张</text>
+                <view
+                  class="step-btn {{burstCount >= 99 ? 'step-btn-disabled' : ''}}"
+                  bindtap="onStepBurstCount"
+                  data-delta="1"
+                >+</view>
+              </view>
+
+              <view class="preset-row">
+                <view
+                  wx:for="{{burstCountPresets}}"
+                  wx:key="*this"
+                  class="preset-chip mono {{burstCount === item ? 'preset-chip-active' : ''}}"
+                  bindtap="onSelectBurstCountPreset"
+                  data-value="{{item}}"
+                >{{item}}张</view>
+              </view>
+            </view>
+
+            <view class="numeric-section burst-sub-section">
+              <view class="section-header">
+                <text class="section-title">每张间隔</text>
+                <text class="section-range mono">1~60秒</text>
+              </view>
+
+              <view class="stepper-row">
+                <view
+                  class="step-btn {{burstIntervalSeconds <= 1 ? 'step-btn-disabled' : ''}}"
+                  bindtap="onStepBurstInterval"
+                  data-delta="-1"
+                >−</view>
+                <text class="stepper-value mono">{{burstIntervalSeconds}}s</text>
+                <view
+                  class="step-btn {{burstIntervalSeconds >= 60 ? 'step-btn-disabled' : ''}}"
+                  bindtap="onStepBurstInterval"
+                  data-delta="1"
+                >+</view>
+              </view>
+
+              <view class="preset-row">
+                <view
+                  wx:for="{{intervalPresets}}"
+                  wx:key="*this"
+                  class="preset-chip mono {{burstIntervalSeconds === item ? 'preset-chip-active' : ''}}"
+                  bindtap="onSelectIntervalPreset"
+                  data-value="{{item}}"
+                >{{item}}s</view>
+              </view>
+            </view>
+          </block>
+        </view>
+      </scroll-view>
+    </view>
+  </view>
+
+  <!-- 索尼相机蓝牙扫描与连接弹窗 -->
+  <view class="sheet-mask" wx:if="{{showCameraPicker}}" bindtap="onDismissCameraPicker" catchtouchmove="noop">
+    <view class="sheet-panel" catchtap="noop">
+      <view class="sheet-handle"></view>
+      <view class="sheet-body picker-sheet-body">
+        <view class="picker-header">
+          <text class="sheet-title">选择索尼相机</text>
+          <view class="picker-actions">
+            <text
+              wx:if="{{connectionType === 'connected'}}"
+              class="action-disconnect"
+              bindtap="onDisconnectCamera"
+            >断开</text>
+            <text class="action-refresh" bindtap="onRefreshScan">{{isScanning ? '扫描中...' : '重新扫描'}}</text>
+          </view>
+        </view>
+
+        <text class="picker-guide">A7C II 请先开启：网络 → 蓝牙功能(开) + 传输/远程 → 蓝牙遥控(开)；首次配对请进入相机「蓝牙 → 配对」，部分安卓机型需同时开启系统定位。</text>
+
+        <view wx:if="{{discoveredCameras.length === 0}}" class="empty-cameras">
+          <text class="empty-cameras-text">{{isScanning ? '正在搜索附近的索尼 BLE 相机...' : '暂未发现相机，请确认相机已开机且开启蓝牙。'}}</text>
+        </view>
+
+        <scroll-view wx:else scroll-y class="camera-list-scroll">
+          <view class="camera-list">
+            <view
+              wx:for="{{discoveredCameras}}"
+              wx:key="deviceId"
+              class="camera-item {{connectionType === 'connected' && connectedDeviceId === item.deviceId ? 'camera-item-connected' : ''}}"
+              bindtap="onSelectCamera"
+              data-index="{{index}}"
+            >
+              <view class="camera-item-info">
+                <text class="camera-name">{{item.name}}</text>
+                <text class="camera-meta mono">{{item.displayId}}{{item.isBonded ? ' · 已配对' : ''}}{{item.isPairingMode ? ' · 可配对' : ''}}{{item.isCached ? ' · 上次连接' : ''}}</text>
+              </view>
+              <text class="camera-action {{connectionType === 'connected' && connectedDeviceId === item.deviceId ? 'camera-action-connected' : ''}}">{{connectionType === 'connected' && connectedDeviceId === item.deviceId ? '已连接' : '连接'}}</text>
+            </view>
+          </view>
+        </scroll-view>
+      </view>
+    </view>
+  </view>
+</view>

@@ -44,3 +44,6 @@
 - `ANDROID_KEYSTORE_PASSWORD`：Keystore 密码
 - `ANDROID_KEY_ALIAS`：Key Alias
 - `ANDROID_KEY_PASSWORD`：Key 密码
+
+## 微信小程序版本
+仓库同时提供了零构建依赖的原生微信小程序实现（支持 iOS / Android 微信真机调试），详见 [wechat-miniprogram/README.md](wechat-miniprogram/README.md)。

@@ -57,3 +57,6 @@ Pods/
 *.tmp
 *.swp
 *~
+
+# WeChat Mini Program
+project.private.config.json
