@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Dark gunmetal anodized plate -->
+    <path android:pathData="M 0,0 L 108,0 L 108,108 L 0,108 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="54"
+                android:centerY="50"
+                android:gradientRadius="72">
+                <item android:offset="0.0" android:color="#FF2B3038" />
+                <item android:offset="0.58" android:color="#FF1D2127" />
+                <item android:offset="1.0" android:color="#FF121519" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Subtle machined concentric lathe rings -->
+    <path
+        android:pathData="M 54.000,15.000 A 39.000,39.000 0 1,1 54.000,93.000 A 39.000,39.000 0 1,1 54.000,15.000 Z"
+        android:strokeWidth="0.6"
+        android:strokeColor="#0DFFFFFF" />
+    <path
+        android:pathData="M 54.000,9.000 A 45.000,45.000 0 1,1 54.000,99.000 A 45.000,45.000 0 1,1 54.000,9.000 Z"
+        android:strokeWidth="0.6"
+        android:strokeColor="#08FFFFFF" />
+</vector>

@@ -1,7 +1,9 @@
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
     <style name="Theme.SonyTimerShutter" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">#121417</item>
         <item name="android:statusBarColor">#121417</item>
         <item name="android:navigationBarColor">#121417</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="27">false</item>
     </style>
 </resources>

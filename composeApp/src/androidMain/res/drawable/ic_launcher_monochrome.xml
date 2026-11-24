@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 270 deg timer arc -->
+    <path
+        android:pathData="M 54.0,28.5 A 25.5,25.5 0 1,1 28.5,54.0"
+        android:strokeWidth="3.2"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M 54.000,26.300 A 2.200,2.200 0 1,1 54.000,30.700 A 2.200,2.200 0 1,1 54.000,26.300 Z"
+        android:fillColor="#FFFFFFFF" />
+
+    <!-- Inner shutter button ring -->
+    <path
+        android:pathData="M 54.000,35.000 A 19.000,19.000 0 1,1 54.000,73.000 A 19.000,19.000 0 1,1 54.000,35.000 Z"
+        android:strokeWidth="2.4"
+        android:strokeColor="#FFFFFFFF" />
+
+    <!-- Bold 6-blade aperture emblem -->
+    <path
+        android:pathData="M 64.47,54.78 A 10.50,10.50 0 0,1 59.91,62.68 L 54.71,57.94 L 57.52,55.89 Z M 58.56,63.46 A 10.50,10.50 0 0,1 49.44,63.46 L 50.95,56.58 L 54.12,58.00 Z M 48.09,62.68 A 10.50,10.50 0 0,1 43.53,54.78 L 50.24,52.65 L 50.60,56.10 Z M 43.53,53.22 A 10.50,10.50 0 0,1 48.09,45.32 L 53.29,50.06 L 50.48,52.11 Z M 49.44,44.54 A 10.50,10.50 0 0,1 58.56,44.54 L 57.05,51.42 L 53.88,50.00 Z M 59.91,45.32 A 10.50,10.50 0 0,1 64.47,53.22 L 57.76,55.35 L 57.40,51.90 Z"
+        android:fillColor="#FFFFFFFF" />
+</vector>

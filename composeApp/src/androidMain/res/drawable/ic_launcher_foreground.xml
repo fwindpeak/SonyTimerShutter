@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 1. Bezel drop shadow -->
+    <path
+        android:pathData="M 54.000,23.400 A 32.000,32.000 0 1,1 54.000,87.400 A 32.000,32.000 0 1,1 54.000,23.400 Z"
+        android:fillColor="#88000000" />
+
+    <!-- 2. Machined steel outer bezel -->
+    <path android:pathData="M 54.000,23.000 A 31.000,31.000 0 1,1 54.000,85.000 A 31.000,31.000 0 1,1 54.000,23.000 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="32"
+                android:startY="32"
+                android:endX="76"
+                android:endY="76">
+                <item android:offset="0.0" android:color="#FF7A808A" />
+                <item android:offset="0.38" android:color="#FF32363E" />
+                <item android:offset="0.72" android:color="#FF1D2025" />
+                <item android:offset="1.0" android:color="#FF555B64" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Bezel top-left bevel highlight -->
+    <path
+        android:pathData="M 54.000,23.300 A 30.700,30.700 0 1,1 54.000,84.700 A 30.700,30.700 0 1,1 54.000,23.300 Z"
+        android:strokeWidth="0.7"
+        android:strokeColor="#28FFFFFF" />
+
+    <!-- Knurling ticks (36 teeth) -->
+    <path
+        android:pathData="M 82.60,54.00 L 84.70,54.00 M 80.88,63.78 L 82.85,64.50 M 75.91,72.38 L 77.52,73.73 M 68.30,78.77 L 69.35,80.59 M 58.97,82.17 L 59.33,84.23 M 49.03,82.17 L 48.67,84.23 M 39.70,78.77 L 38.65,80.59 M 32.09,72.38 L 30.48,73.73 M 27.12,63.78 L 25.15,64.50 M 25.40,54.00 L 23.30,54.00 M 27.12,44.22 L 25.15,43.50 M 32.09,35.62 L 30.48,34.27 M 39.70,29.23 L 38.65,27.41 M 49.03,25.83 L 48.67,23.77 M 58.97,25.83 L 59.33,23.77 M 68.30,29.23 L 69.35,27.41 M 75.91,35.62 L 77.52,34.27 M 80.88,44.22 L 82.85,43.50"
+        android:strokeWidth="0.9"
+        android:strokeColor="#73000000"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M 82.17,58.97 L 84.23,59.33 M 78.77,68.30 L 80.59,69.35 M 72.38,75.91 L 73.73,77.52 M 63.78,80.88 L 64.50,82.85 M 54.00,82.60 L 54.00,84.70 M 44.22,80.88 L 43.50,82.85 M 35.62,75.91 L 34.27,77.52 M 29.23,68.30 L 27.41,69.35 M 25.83,58.97 L 23.77,59.33 M 25.83,49.03 L 23.77,48.67 M 29.23,39.70 L 27.41,38.65 M 35.62,32.09 L 34.27,30.48 M 44.22,27.12 L 43.50,25.15 M 54.00,25.40 L 54.00,23.30 M 63.78,27.12 L 64.50,25.15 M 72.38,32.09 L 73.73,30.48 M 78.77,39.70 L 80.59,38.65 M 82.17,49.03 L 84.23,48.67"
+        android:strokeWidth="0.8"
+        android:strokeColor="#26FFFFFF"
+        android:strokeLineCap="round" />
+
+    <!-- 3. Recessed shutter well -->
+    <path android:pathData="M 54.000,26.800 A 27.200,27.200 0 1,1 54.000,81.200 A 27.200,27.200 0 1,1 54.000,26.800 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="54"
+                android:centerY="54"
+                android:gradientRadius="27.2">
+                <item android:offset="0.0" android:color="#FF090B0E" />
+                <item android:offset="0.82" android:color="#FF111318" />
+                <item android:offset="1.0" android:color="#FF191C22" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- 4. Countdown timer LED track & 270 deg glowing Sony orange-red arc -->
+    <path
+        android:pathData="M 54.000,29.500 A 24.500,24.500 0 1,1 54.000,78.500 A 24.500,24.500 0 1,1 54.000,29.500 Z"
+        android:strokeWidth="2.2"
+        android:strokeColor="#FF232730" />
+    <path
+        android:pathData="M 54.0,29.5 A 24.5,24.5 0 1,1 29.5,54.0"
+        android:strokeWidth="4.6"
+        android:strokeColor="#4DFF5A36"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M 54.0,29.5 A 24.5,24.5 0 1,1 29.5,54.0"
+        android:strokeWidth="2.2"
+        android:strokeColor="#FFFF6B42"
+        android:strokeLineCap="round" />
+    <!-- 12 o'clock bright timer start pip -->
+    <path
+        android:pathData="M 54.000,27.800 A 1.700,1.700 0 1,1 54.000,31.200 A 1.700,1.700 0 1,1 54.000,27.800 Z"
+        android:fillColor="#FFFFD0C2" />
+
+    <!-- 5. Vintage concave crimson-red mechanical shutter cap -->
+    <!-- 3D skirt shadow -->
+    <path
+        android:pathData="M 54.000,36.100 A 20.100,20.100 0 1,1 54.000,76.300 A 20.100,20.100 0 1,1 54.000,36.100 Z"
+        android:fillColor="#99000000" />
+    <path
+        android:pathData="M 54.000,35.700 A 19.700,19.700 0 1,1 54.000,75.100 A 19.700,19.700 0 1,1 54.000,35.700 Z"
+        android:fillColor="#FF4A0A09" />
+
+    <!-- Main red painted cap -->
+    <path android:pathData="M 54.000,33.900 A 19.600,19.600 0 1,1 54.000,73.100 A 19.600,19.600 0 1,1 54.000,33.900 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="48"
+                android:centerY="47"
+                android:gradientRadius="26">
+                <item android:offset="0.0" android:color="#FFE53E36" />
+                <item android:offset="0.58" android:color="#FFB81E1A" />
+                <item android:offset="1.0" android:color="#FF7A110F" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Concave inner finger-dish -->
+    <path android:pathData="M 54.000,38.700 A 14.800,14.800 0 1,1 54.000,68.300 A 14.800,14.800 0 1,1 54.000,38.700 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="43.5"
+                android:startY="43.0"
+                android:endX="64.5"
+                android:endY="64.0">
+                <item android:offset="0.0" android:color="#8C5A0B09" />
+                <item android:offset="0.55" android:color="#40B82420" />
+                <item android:offset="1.0" android:color="#2EFF8A80" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Specular rim highlight on button cap -->
+    <path android:pathData="M 54.000,34.500 A 19.000,19.000 0 1,1 54.000,72.500 A 19.000,19.000 0 1,1 54.000,34.500 Z" android:strokeWidth="1.0">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:type="linear"
+                android:startX="40"
+                android:startY="40"
+                android:endX="68"
+                android:endY="68">
+                <item android:offset="0.0" android:color="#55FFFFFF" />
+                <item android:offset="0.48" android:color="#00FFFFFF" />
+                <item android:offset="1.0" android:color="#55000000" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- 6. Centered 6-blade geometric camera aperture emblem -->
+    <path
+        android:pathData="M 62.78,54.08 A 8.80,8.80 0 0,1 58.89,60.82 L 54.58,56.85 L 57.01,55.08 Z M 57.89,61.39 A 8.80,8.80 0 0,1 50.11,61.39 L 51.39,55.67 L 54.13,56.90 Z M 49.11,60.82 A 8.80,8.80 0 0,1 45.22,54.08 L 50.81,52.32 L 51.12,55.31 Z M 45.22,52.92 A 8.80,8.80 0 0,1 49.11,46.18 L 53.42,50.15 L 50.99,51.92 Z M 50.11,45.61 A 8.80,8.80 0 0,1 57.89,45.61 L 56.61,51.33 L 53.87,50.10 Z M 58.89,46.18 A 8.80,8.80 0 0,1 62.78,52.92 L 57.19,54.68 L 56.88,51.69 Z"
+        android:fillColor="#EBFFF2EE" />
+</vector>

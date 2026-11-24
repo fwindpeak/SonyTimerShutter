@@ -43,6 +43,7 @@ fun TimerSettingsSheet(
         containerColor = Color(0xFF1A1D21),
         contentColor = Color(0xFFE5E7EB)
     ) {
+        EnforceDarkSystemBars()
         Column(
             modifier = Modifier
                 .fillMaxWidth()
