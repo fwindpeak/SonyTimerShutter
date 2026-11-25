@@ -120,7 +120,7 @@ class ShutterTimerViewModel(
     private val wifiConfigFlow = MutableStateFlow(
         WifiCameraConfig(
             host = preferences.getWifiHost(),
-            useSsh = preferences.isWifiUseSsh(),
+            useSsh = false,
             sshUsername = preferences.getWifiSshUsername(),
             sshPassword = preferences.getWifiSshPassword()
         )
@@ -265,7 +265,7 @@ class ShutterTimerViewModel(
     }
 
     /**
-     * 响应小米手环 9 Pro（蓝牙拍照 HID / 音乐控制）或蓝牙自拍器、音量键的远程快门触发。
+     * 响应小米手环（蓝牙拍照 HID / 音乐控制）或蓝牙自拍器、音量键的远程快门触发。
      */
     fun onRemoteShutterTrigger(sourceLabel: String = "手环/遥控") {
         if (!remoteTriggerEnabledFlow.value) return

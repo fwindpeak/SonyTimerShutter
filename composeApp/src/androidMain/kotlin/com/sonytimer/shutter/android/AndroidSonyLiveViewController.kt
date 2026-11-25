@@ -694,7 +694,7 @@ class AndroidSonyLiveViewController(
                 if (usedSsh) {
                     "相机拒绝 SSH (22) 连接，请确认已开启「PC 遥控」"
                 } else {
-                    "相机拒绝 15740 端口连接，请确认已开启「PC 遥控」且关闭「访问认证」"
+                    "相机拒绝 15740 端口连接，请确认已在相机「网络 → 连接 → 遥控拍摄 → 电脑遥控功能」中匹配手机"
                 }
             raw.contains("ETIMEDOUT", ignoreCase = true) || error is SocketTimeoutException ->
                 "连接相机超时，请检查相机 IP 与 Wi-Fi 连接"

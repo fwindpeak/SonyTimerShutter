@@ -4,8 +4,8 @@ package com.sonytimer.shutter.android
  * 远程快门按键分类与防抖策略（纯 Kotlin 实现，不依赖 Android Framework 类以支持 JVM 单元测试）。
  *
  * 支持：
- * 1. 小米手环 9 Pro 遥控拍照 / 蓝牙自拍器发送的 HID 按键（音量 +/-、拍照键、外接 Enter）
- * 2. 小米手环 9 Pro 音乐控制发送的媒体键（播放/暂停、切歌、耳机线控）
+ * 1. 小米手环 遥控拍照 / 蓝牙自拍器发送的 HID 按键（音量 +/-、拍照键、外接 Enter）
+ * 2. 小米手环 音乐控制发送的媒体键（播放/暂停、切歌、耳机线控）
  */
 internal object RemoteShutterTriggerPolicy {
 

@@ -6,7 +6,7 @@ import kotlinx.coroutines.flow.StateFlow
 
 data class WifiCameraConfig(
     val host: String = SonyPtpIpProtocol.DEFAULT_CAMERA_IP,
-    val useSsh: Boolean = true,
+    val useSsh: Boolean = false,
     val sshUsername: String = "",
     val sshPassword: String = ""
 )

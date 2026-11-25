@@ -226,7 +226,7 @@ fun TimerSettingsSheet(
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
                             text = if (remoteTriggerEnabled) {
-                                "小米手环 9 Pro、蓝牙快门或音量键均可触发倒计时"
+                                "小米手环、蓝牙快门或音量键均可触发倒计时"
                             } else {
                                 "开启后支持小米手环、蓝牙自拍杆或音量键触发倒计时"
                             },

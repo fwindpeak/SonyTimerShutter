@@ -35,7 +35,7 @@ interface TimerPreferences {
     fun getWifiHost(defaultValue: String = "192.168.122.1"): String
     fun setWifiHost(host: String)
 
-    fun isWifiUseSsh(defaultValue: Boolean = true): Boolean
+    fun isWifiUseSsh(defaultValue: Boolean = false): Boolean
     fun setWifiUseSsh(useSsh: Boolean)
 
     fun getWifiSshUsername(defaultValue: String = ""): String

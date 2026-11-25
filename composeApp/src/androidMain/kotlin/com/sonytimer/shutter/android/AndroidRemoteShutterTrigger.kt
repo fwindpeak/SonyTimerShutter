@@ -15,7 +15,7 @@ import android.view.KeyEvent
 import com.sonytimer.shutter.android.RemoteShutterTriggerPolicy.KeyDecision
 
 /**
- * Android 端小米手环 9 Pro / 蓝牙遥控快门监听器。
+ * Android 端小米手环 / 蓝牙遥控快门监听器。
  *
  * 同时支持两条通路以兼顾不同手机系统（包含鸿蒙 HarmonyOS）：
  * 1. 前台 HID / 硬件按键拦截（音量 +/-、拍照键、外接 Enter、媒体键）；
