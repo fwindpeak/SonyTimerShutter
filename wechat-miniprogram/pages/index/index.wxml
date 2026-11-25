@@ -184,7 +184,7 @@
           </view>
         </view>
 
-        <text class="picker-guide">A7C II 请先开启：网络 → 蓝牙功能(开) + 传输/远程 → 蓝牙遥控(开)；首次配对请进入相机「蓝牙 → 配对」，部分安卓机型需同时开启系统定位。</text>
+        <text class="picker-guide">索尼相机请先开启：网络 → 蓝牙功能(开) + 传输/远程 → 蓝牙遥控(开)；首次配对请进入相机「蓝牙 → 配对」，部分安卓机型需同时开启系统定位。</text>
 
         <view wx:if="{{discoveredCameras.length === 0}}" class="empty-cameras">
           <text class="empty-cameras-text">{{isScanning ? '正在搜索附近的索尼 BLE 相机...' : '暂未发现相机，请确认相机已开机且开启蓝牙。'}}</text>

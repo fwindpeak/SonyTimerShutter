@@ -1,6 +1,6 @@
 # SonyTimerShutter (KMP / Android)
 
-面向索尼相机（适配 **Sony A7C II / ILCE-7CM2** 及同 BLE 遥控协议机型）的极简定时拍照 App，基于 **Kotlin Multiplatform + Compose Multiplatform** 构建。
+面向索尼相机（适配支持 BLE / PTP/IP 遥控协议的 Alpha / ZV / FX 系列机型，已实测 A7C II、A7M4 等）的极简定时拍照 App，基于 **Kotlin Multiplatform + Compose Multiplatform** 构建。
 
 ## 核心交互
 - **界面极简**：顶部为克制的**蓝牙状态胶囊**与**实时预览胶囊**，未开启预览时中央为全尺寸**工业感复古机械大按钮**，底部为对称的**拍摄参数胶囊**。
@@ -10,7 +10,7 @@
 - **拍摄参数调节**：点击底部**参数胶囊**（单拍 / 连拍状态一目了然）呼出设置面板，支持倒计时 `2s / 3s / 5s / 10s / 15s / 30s` 快捷档位与 `1~60s` 逐秒微调；开启**连拍模式**后还可设置连拍张数（`2~99张`）与每张间隔时间（`1~60s`），修改自动持久化。
 - **蓝牙配对入口**：点击顶部蓝牙状态条（或未连接时直接点主按钮）弹出索尼相机扫描与连接列表。
 
-## 索尼 A7C II 相机端设置
+## 索尼相机端设置
 ### 方式 A：纯蓝牙定时快门（盲拍，最省电）
 按 [Sony 官方蓝牙遥控支持文档](https://www.sony.com/electronics/support/articles/00266597) 配置：
 1. `MENU → 网络 → 蓝牙 → 蓝牙功能 → 开`

@@ -88,7 +88,7 @@ fun CameraPickerSheet(
 
             Spacer(modifier = Modifier.height(6.dp))
             Text(
-                text = "A7C II 请先开启：网络 → 蓝牙功能(开) + 传输/远程 → 蓝牙遥控(开)；首次配对请进入相机「蓝牙 → 配对」。",
+                text = "索尼相机请先开启：网络 → 蓝牙功能(开) + 传输/远程 → 蓝牙遥控(开)；首次配对请进入相机「蓝牙 → 配对」。",
                 fontSize = 12.sp,
                 lineHeight = 18.sp,
                 color = Color(0xFF9CA3AF)

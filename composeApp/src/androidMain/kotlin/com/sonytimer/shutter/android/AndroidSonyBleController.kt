@@ -45,7 +45,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 
 /**
- * Android 端索尼相机 BLE GATT 遥控控制器（支持 A7C II / ILCE-7CM2 等索尼 Alpha 系列，
+ * Android 端索尼相机 BLE GATT 遥控控制器（支持 A7C II、A7M4 等索尼 Alpha / ZV / FX 系列，
  * 针对 HarmonyOS / 卓易通及 Android 13+ 新蓝牙栈做了串行化与写模式自适应）。
  */
 @SuppressLint("MissingPermission")
@@ -915,8 +915,9 @@ class AndroidSonyBleController(
     private fun isLikelySonyCameraName(name: String): Boolean {
         val upper = name.uppercase()
         return upper.contains("ILCE") ||
+            upper.contains("ILME") ||
             upper.contains("SONY") ||
-            upper.contains("A7C") ||
+            upper.contains("A7") ||
             upper.contains("ZV-") ||
             upper.contains("DSC-") ||
             upper.contains("FX")

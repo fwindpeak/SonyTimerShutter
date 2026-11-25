@@ -107,7 +107,7 @@ fun WifiPreviewSheet(
 
             Spacer(modifier = Modifier.height(6.dp))
             Text(
-                text = "A7C II 设置：先通过「Wi-Fi Direct 信息」直连相机热点，或让相机与手机连入同一 Wi-Fi / 手机热点；" +
+                text = "索尼相机设置：先通过「Wi-Fi Direct 信息」直连相机热点，或让相机与手机连入同一 Wi-Fi / 手机热点；" +
                     "再前往相机 MENU → 网络 → 连接 → 遥控拍摄 → 电脑遥控功能，匹配手机后即可实时预览。",
                 fontSize = 12.sp,
                 lineHeight = 18.sp,

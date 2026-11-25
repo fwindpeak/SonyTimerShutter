@@ -1,5 +1,5 @@
 /**
- * 索尼 Alpha 系列相机 BLE 遥控协议定义（适配 A7C II / ILCE-7CM2 及同协议机型）。
+ * 索尼 Alpha / ZV / FX 系列相机 BLE 遥控协议定义（适配 A7C II、A7M4 等同协议机型）。
  * 对应原 Kotlin 实现：SonyBleProtocol.kt
  */
 
@@ -113,8 +113,9 @@ function isLikelySonyCameraName(name) {
   const upper = name.toUpperCase();
   return (
     upper.includes('ILCE') ||
+    upper.includes('ILME') ||
     upper.includes('SONY') ||
-    upper.includes('A7C') ||
+    upper.includes('A7') ||
     upper.includes('ZV-') ||
     upper.includes('DSC-') ||
     upper.includes('FX')

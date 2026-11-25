@@ -1,7 +1,7 @@
 package com.sonytimer.shutter.protocol
 
 /**
- * 索尼 Alpha 系列相机 BLE 遥控协议定义（适配 A7C II / ILCE-7CM2 及同协议机型）。
+ * 索尼 Alpha / ZV / FX 系列相机 BLE 遥控协议定义（适配 A7C II、A7M4 等同协议机型）。
  *
  * 参考实现：
  * - coral/freemote: https://github.com/coral/freemote
