@@ -51,11 +51,11 @@ android {
     val appVersionName = providers.gradleProperty("appVersionName")
         .orNull
         ?.takeIf { it.isNotBlank() }
-        ?: "1.1.0"
+        ?: "1.2.0"
     val appVersionCode = providers.gradleProperty("appVersionCode")
         .orNull
         ?.toIntOrNull()
-        ?: 10100
+        ?: 10200
 
     val releaseStoreFile = providers.environmentVariable("SIGNING_STORE_FILE").orNull?.takeIf { it.isNotBlank() }
     val releaseStorePassword = providers.environmentVariable("SIGNING_STORE_PASSWORD").orNull?.takeIf { it.isNotBlank() }

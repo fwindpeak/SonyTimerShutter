@@ -140,18 +140,50 @@ jobs:
           path: ${{ steps.prepare.outputs.apk_path }}
           if-no-files-found: error
 
+      - name: Prepare release notes
+        id: notes
+        shell: bash
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          NOTES_FILE="dist/release-notes.md"
+          HAS_CHANGELOG="false"
+
+          if [ -f CHANGELOG.md ]; then
+            EXTRACTED="$(awk -v tag="$TAG" '
+              $0 ~ "^## \\[" tag "\\]" { capture=1; print; next }
+              capture && /^## \[/ { exit }
+              capture { print }
+            ' CHANGELOG.md)"
+            if [ -n "$EXTRACTED" ]; then
+              HAS_CHANGELOG="true"
+              {
+                printf '%s\n\n' "$EXTRACTED"
+                printf '%s\n\n' "---"
+              } > "$NOTES_FILE"
+            fi
+          fi
+
+          if [ "$HAS_CHANGELOG" != "true" ]; then
+            : > "$NOTES_FILE"
+          fi
+
+          {
+            printf '%s\n' "- **Version**: \`${{ steps.version.outputs.version_name }}\` (\`versionCode\`: \`${{ steps.version.outputs.version_code }}\`)"
+            printf '%s\n' "- **Signing**: \`${{ steps.signing.outputs.mode }}\`"
+            printf '%s\n' "- **SHA-256**: \`${{ steps.prepare.outputs.sha256 }}\`"
+          } >> "$NOTES_FILE"
+
+          echo "has_changelog=${HAS_CHANGELOG}" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
           name: SonyTimerShutter ${{ steps.version.outputs.tag }}
-          generate_release_notes: true
+          generate_release_notes: ${{ steps.notes.outputs.has_changelog != 'true' }}
           prerelease: ${{ steps.version.outputs.prerelease == 'true' }}
           make_latest: ${{ steps.version.outputs.prerelease != 'true' && 'true' || 'false' }}
-          body: |
-            - **Version**: `${{ steps.version.outputs.version_name }}` (`versionCode`: `${{ steps.version.outputs.version_code }}`)
-            - **Signing**: `${{ steps.signing.outputs.mode }}`
-            - **SHA-256**: `${{ steps.prepare.outputs.sha256 }}`
+          body_path: dist/release-notes.md
           files: |
             ${{ steps.prepare.outputs.apk_path }}
