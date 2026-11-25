@@ -33,7 +33,8 @@ private data class TimerConfigSnapshot(
     val configuredSeconds: Int,
     val burstEnabled: Boolean,
     val burstCount: Int,
-    val burstIntervalSeconds: Int
+    val burstIntervalSeconds: Int,
+    val remoteTriggerEnabled: Boolean
 )
 
 private data class BleSnapshot(
@@ -71,7 +72,8 @@ data class ShutterUiState(
     val isPreviewMirrored: Boolean = false,
     val showWifiSheet: Boolean = false,
     val wifiConfig: WifiCameraConfig = WifiCameraConfig(),
-    val detectedGatewayIp: String? = null
+    val detectedGatewayIp: String? = null,
+    val remoteTriggerEnabled: Boolean = true
 ) {
     val isBleConnected: Boolean
         get() = connectionState is BleConnectionState.Connected
@@ -111,6 +113,9 @@ class ShutterTimerViewModel(
     private val isPreviewMirroredFlow = MutableStateFlow(
         preferences.isPreviewMirrored(defaultValue = false)
     )
+    private val remoteTriggerEnabledFlow = MutableStateFlow(
+        preferences.isRemoteTriggerEnabled(defaultValue = true)
+    )
     private val showWifiSheetFlow = MutableStateFlow(false)
     private val wifiConfigFlow = MutableStateFlow(
         WifiCameraConfig(
@@ -130,13 +135,15 @@ class ShutterTimerViewModel(
         configuredSecondsFlow,
         burstEnabledFlow,
         burstCountFlow,
-        burstIntervalSecondsFlow
-    ) { seconds, burstEnabled, burstCount, burstInterval ->
+        burstIntervalSecondsFlow,
+        remoteTriggerEnabledFlow
+    ) { seconds, burstEnabled, burstCount, burstInterval, remoteTriggerEnabled ->
         TimerConfigSnapshot(
             configuredSeconds = seconds,
             burstEnabled = burstEnabled,
             burstCount = burstCount,
-            burstIntervalSeconds = burstInterval
+            burstIntervalSeconds = burstInterval,
+            remoteTriggerEnabled = remoteTriggerEnabled
         )
     }
 
@@ -212,7 +219,8 @@ class ShutterTimerViewModel(
             isPreviewMirrored = lv.isPreviewMirrored,
             showWifiSheet = lv.showWifiSheet,
             wifiConfig = lv.wifiConfig,
-            detectedGatewayIp = lv.detectedGatewayIp
+            detectedGatewayIp = lv.detectedGatewayIp,
+            remoteTriggerEnabled = timer.remoteTriggerEnabled
         )
     }.stateIn(
         scope = scope,
@@ -223,7 +231,8 @@ class ShutterTimerViewModel(
             burstCount = burstCountFlow.value,
             burstIntervalSeconds = burstIntervalSecondsFlow.value,
             isPreviewMirrored = isPreviewMirroredFlow.value,
-            wifiConfig = wifiConfigFlow.value
+            wifiConfig = wifiConfigFlow.value,
+            remoteTriggerEnabled = remoteTriggerEnabledFlow.value
         )
     )
 
@@ -255,6 +264,40 @@ class ShutterTimerViewModel(
         startCountdown()
     }
 
+    /**
+     * 响应小米手环 9 Pro（蓝牙拍照 HID / 音乐控制）或蓝牙自拍器、音量键的远程快门触发。
+     */
+    fun onRemoteShutterTrigger(sourceLabel: String = "手环/遥控") {
+        if (!remoteTriggerEnabledFlow.value) return
+        if (showCameraPickerFlow.value || showTimerSheetFlow.value || showWifiSheetFlow.value) {
+            return
+        }
+
+        when (val currentPhase = phaseFlow.value) {
+            is ShutterPhase.CountingDown -> {
+                cancelCountdown()
+            }
+            is ShutterPhase.Triggering -> {
+                if (currentPhase.totalShots > 1 && currentPhase.currentShot < currentPhase.totalShots) {
+                    cancelBurstAfterCurrentShot = true
+                    showTemporaryHint("正在停止连拍...")
+                }
+            }
+            is ShutterPhase.ShotSuccess -> Unit
+            ShutterPhase.Idle -> {
+                val wifiReady = liveViewController.connectionState.value is LiveViewConnectionState.Connected
+                val bleReady = bleController.connectionState.value is BleConnectionState.Connected
+                if (!wifiReady && !bleReady) {
+                    feedbackPlayer.playMechanicalPress()
+                    showTemporaryHint("请先连接索尼相机后再用${sourceLabel}拍照", durationMs = 3_000L)
+                    return
+                }
+                startCountdown()
+                showTemporaryHint("${sourceLabel}已触发倒计时", durationMs = 1_600L)
+            }
+        }
+    }
+
     fun openTimerSheet() {
         if (phaseFlow.value is ShutterPhase.CountingDown || phaseFlow.value is ShutterPhase.Triggering) {
             return
@@ -283,6 +326,11 @@ class ShutterTimerViewModel(
         val clamped = seconds.coerceIn(MIN_BURST_INTERVAL_SECONDS, MAX_BURST_INTERVAL_SECONDS)
         burstIntervalSecondsFlow.value = clamped
         preferences.setBurstIntervalSeconds(clamped)
+    }
+
+    fun updateRemoteTriggerEnabled(enabled: Boolean) {
+        remoteTriggerEnabledFlow.value = enabled
+        preferences.setRemoteTriggerEnabled(enabled)
     }
 
     fun dismissTimerSheet() {

@@ -52,10 +52,12 @@ fun TimerSettingsSheet(
     burstEnabled: Boolean,
     burstCount: Int,
     burstIntervalSeconds: Int,
+    remoteTriggerEnabled: Boolean,
     onSelectSeconds: (Int) -> Unit,
     onToggleBurst: (Boolean) -> Unit,
     onSelectBurstCount: (Int) -> Unit,
     onSelectBurstInterval: (Int) -> Unit,
+    onToggleRemoteTrigger: (Boolean) -> Unit,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -188,6 +190,92 @@ fun TimerSettingsSheet(
                         presetLabel = { "${it}s" },
                         onValueChange = onSelectBurstInterval
                     )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(22.dp))
+            HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+            Spacer(modifier = Modifier.height(18.dp))
+
+            // 手环 / 蓝牙快门遥控开关卡片
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color(0xFF22262C))
+                    .border(
+                        width = 1.dp,
+                        color = if (remoteTriggerEnabled) Color(0xFF34D399).copy(alpha = 0.35f) else Color.White.copy(alpha = 0.08f),
+                        shape = RoundedCornerShape(14.dp)
+                    )
+                    .clickable { onToggleRemoteTrigger(!remoteTriggerEnabled) }
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "手环 / 蓝牙快门遥控",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFFF3F4F6)
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = if (remoteTriggerEnabled) {
+                                "小米手环 9 Pro、蓝牙快门或音量键均可触发倒计时"
+                            } else {
+                                "开启后支持小米手环、蓝牙自拍杆或音量键触发倒计时"
+                            },
+                            fontSize = 12.sp,
+                            color = Color(0xFF9CA3AF)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Switch(
+                        checked = remoteTriggerEnabled,
+                        onCheckedChange = onToggleRemoteTrigger,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = Color(0xFF059669),
+                            checkedBorderColor = Color(0xFF34D399),
+                            uncheckedThumbColor = Color(0xFFD1D5DB),
+                            uncheckedTrackColor = Color(0xFF374151),
+                            uncheckedBorderColor = Color.White.copy(alpha = 0.14f)
+                        )
+                    )
+                }
+
+                AnimatedVisibility(
+                    visible = remoteTriggerEnabled,
+                    enter = expandVertically() + fadeIn(),
+                    exit = shrinkVertically() + fadeOut()
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 10.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0xFF181B20))
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "• 方式 1（遥控拍照）：手环通过小米运动健康开启蓝牙拍照后点击拍照",
+                            fontSize = 11.sp,
+                            lineHeight = 16.sp,
+                            color = Color(0xFFD1D5DB)
+                        )
+                        Text(
+                            text = "• 方式 2（音乐控制，鸿蒙推荐）：手环打开音乐控制，点播放/切歌/音量直接触发",
+                            fontSize = 11.sp,
+                            lineHeight = 16.sp,
+                            color = Color(0xFFA7F3D0)
+                        )
+                    }
                 }
             }
         }

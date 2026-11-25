@@ -81,6 +81,14 @@ class AndroidTimerPreferences(context: Context) : TimerPreferences {
         prefs.edit().putBoolean(KEY_PREVIEW_MIRRORED, mirrored).apply()
     }
 
+    override fun isRemoteTriggerEnabled(defaultValue: Boolean): Boolean {
+        return prefs.getBoolean(KEY_REMOTE_TRIGGER_ENABLED, defaultValue)
+    }
+
+    override fun setRemoteTriggerEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_REMOTE_TRIGGER_ENABLED, enabled).apply()
+    }
+
     private companion object {
         const val KEY_TIMER_SECONDS = "timer_seconds"
         const val KEY_BURST_ENABLED = "burst_enabled"
@@ -91,5 +99,6 @@ class AndroidTimerPreferences(context: Context) : TimerPreferences {
         const val KEY_WIFI_SSH_USERNAME = "wifi_ssh_username"
         const val KEY_WIFI_SSH_PASSWORD = "wifi_ssh_password"
         const val KEY_PREVIEW_MIRRORED = "preview_mirrored"
+        const val KEY_REMOTE_TRIGGER_ENABLED = "remote_trigger_enabled"
     }
 }

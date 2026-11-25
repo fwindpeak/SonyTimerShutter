@@ -144,10 +144,12 @@ fun SonyTimerShutterApp(
                     burstEnabled = uiState.burstEnabled,
                     burstCount = uiState.burstCount,
                     burstIntervalSeconds = uiState.burstIntervalSeconds,
+                    remoteTriggerEnabled = uiState.remoteTriggerEnabled,
                     onSelectSeconds = viewModel::updateTimerSeconds,
                     onToggleBurst = viewModel::updateBurstEnabled,
                     onSelectBurstCount = viewModel::updateBurstCount,
                     onSelectBurstInterval = viewModel::updateBurstIntervalSeconds,
+                    onToggleRemoteTrigger = viewModel::updateRemoteTriggerEnabled,
                     onDismiss = viewModel::dismissTimerSheet
                 )
             }

@@ -46,4 +46,7 @@ interface TimerPreferences {
 
     fun isPreviewMirrored(defaultValue: Boolean = false): Boolean
     fun setPreviewMirrored(mirrored: Boolean)
+
+    fun isRemoteTriggerEnabled(defaultValue: Boolean = true): Boolean
+    fun setRemoteTriggerEnabled(enabled: Boolean)
 }
