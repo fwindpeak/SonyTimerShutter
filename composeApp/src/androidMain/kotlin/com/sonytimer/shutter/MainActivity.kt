@@ -51,9 +51,21 @@ class MainActivity : ComponentActivity() {
             hasBlePermissions = ::hasRequiredBlePermissions,
             onPermissionsMissing = ::requestBlePermissions
         )
-        val liveViewController = AndroidSonyLiveViewController(context = this)
-        val feedbackPlayer = AndroidFeedbackPlayer(this)
         val preferences = AndroidTimerPreferences(this)
+        val liveViewController = AndroidSonyLiveViewController(
+            context = this,
+            clientGuidProvider = {
+                val savedHex = preferences.getPtpClientGuid()
+                com.sonytimer.shutter.protocol.SonyPtpIpProtocol.decodeGuidHex(savedHex) ?: run {
+                    val generated = ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }
+                    preferences.setPtpClientGuid(
+                        com.sonytimer.shutter.protocol.SonyPtpIpProtocol.encodeGuidHex(generated)
+                    )
+                    generated
+                }
+            }
+        )
+        val feedbackPlayer = AndroidFeedbackPlayer(this)
 
         viewModel = ShutterTimerViewModel(
             scope = appScope,

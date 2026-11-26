@@ -54,6 +54,18 @@ fun LiveViewStatusPill(
             Color(0xFF34D399).copy(alpha = 0.28f),
             "预览中"
         )
+        is LiveViewConnectionState.Searching -> Quad(
+            Color(0xFFF59E0B),
+            Color(0xFFFCD34D),
+            Color(0xFFF59E0B).copy(alpha = 0.28f),
+            "搜索中..."
+        )
+        is LiveViewConnectionState.WaitingForConfirm -> Quad(
+            Color(0xFFF59E0B),
+            Color(0xFFFCD34D),
+            Color(0xFFF59E0B).copy(alpha = 0.45f),
+            "待相机确认"
+        )
         is LiveViewConnectionState.Connecting -> Quad(
             Color(0xFFF59E0B),
             Color(0xFFFCD34D),

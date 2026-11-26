@@ -282,6 +282,37 @@ object SonyPtpIpProtocol {
         }
     }
 
+    fun encodeGuidHex(guid: ByteArray): String {
+        require(guid.size == 16) { "PTP/IP client GUID must be 16 bytes" }
+        val hexChars = "0123456789abcdef"
+        val out = CharArray(32)
+        for (i in 0 until 16) {
+            val v = guid[i].toInt() and 0xFF
+            out[i * 2] = hexChars[v ushr 4]
+            out[i * 2 + 1] = hexChars[v and 0x0F]
+        }
+        return out.concatToString()
+    }
+
+    fun decodeGuidHex(hex: String?): ByteArray? {
+        if (hex == null || hex.length != 32) return null
+        val out = ByteArray(16)
+        for (i in 0 until 16) {
+            val hi = hexDigit(hex[i * 2])
+            val lo = hexDigit(hex[i * 2 + 1])
+            if (hi < 0 || lo < 0) return null
+            out[i] = ((hi shl 4) or lo).toByte()
+        }
+        return out
+    }
+
+    private fun hexDigit(c: Char): Int = when (c) {
+        in '0'..'9' -> c - '0'
+        in 'a'..'f' -> c - 'a' + 10
+        in 'A'..'F' -> c - 'A' + 10
+        else -> -1
+    }
+
     private fun encodeUtf16LeNullTerminated(text: String): ByteArray {
         val out = ByteArray((text.length + 1) * 2)
         for (i in text.indices) {

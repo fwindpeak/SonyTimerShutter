@@ -49,4 +49,7 @@ interface TimerPreferences {
 
     fun isRemoteTriggerEnabled(defaultValue: Boolean = true): Boolean
     fun setRemoteTriggerEnabled(enabled: Boolean)
+
+    fun getPtpClientGuid(): String = ""
+    fun setPtpClientGuid(guidHex: String) {}
 }

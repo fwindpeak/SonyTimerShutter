@@ -89,6 +89,14 @@ class AndroidTimerPreferences(context: Context) : TimerPreferences {
         prefs.edit().putBoolean(KEY_REMOTE_TRIGGER_ENABLED, enabled).apply()
     }
 
+    override fun getPtpClientGuid(): String {
+        return prefs.getString(KEY_PTP_CLIENT_GUID, "").orEmpty()
+    }
+
+    override fun setPtpClientGuid(guidHex: String) {
+        prefs.edit().putString(KEY_PTP_CLIENT_GUID, guidHex).apply()
+    }
+
     private companion object {
         const val KEY_TIMER_SECONDS = "timer_seconds"
         const val KEY_BURST_ENABLED = "burst_enabled"
@@ -100,5 +108,6 @@ class AndroidTimerPreferences(context: Context) : TimerPreferences {
         const val KEY_WIFI_SSH_PASSWORD = "wifi_ssh_password"
         const val KEY_PREVIEW_MIRRORED = "preview_mirrored"
         const val KEY_REMOTE_TRIGGER_ENABLED = "remote_trigger_enabled"
+        const val KEY_PTP_CLIENT_GUID = "ptp_client_guid"
     }
 }

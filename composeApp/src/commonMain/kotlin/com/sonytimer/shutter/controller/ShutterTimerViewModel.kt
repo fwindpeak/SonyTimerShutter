@@ -131,6 +131,26 @@ class ShutterTimerViewModel(
     private var hintJob: Job? = null
     private var cancelBurstAfterCurrentShot = false
 
+    init {
+        scope.launch {
+            var wasConnected = false
+            liveViewController.connectionState.collect { state ->
+                val isNowConnected = state is LiveViewConnectionState.Connected
+                if (state is LiveViewConnectionState.Connected && !wasConnected) {
+                    if (state.host.isNotBlank() && state.host != wifiConfigFlow.value.host) {
+                        wifiConfigFlow.value = wifiConfigFlow.value.copy(host = state.host)
+                        preferences.setWifiHost(state.host)
+                    }
+                    if (showWifiSheetFlow.value) {
+                        showWifiSheetFlow.value = false
+                    }
+                    showTemporaryHint("已连接 ${state.cameraName} 实时预览", durationMs = 2_400L)
+                }
+                wasConnected = isNowConnected
+            }
+        }
+    }
+
     private val timerConfigFlow = combine(
         configuredSecondsFlow,
         burstEnabledFlow,
@@ -367,10 +387,21 @@ class ShutterTimerViewModel(
     fun openWifiSheet() {
         detectedGatewayIpFlow.value = liveViewController.detectWifiGatewayIp()
         showWifiSheetFlow.value = true
+        val currentState = liveViewController.connectionState.value
+        if (currentState is LiveViewConnectionState.Disconnected ||
+            currentState is LiveViewConnectionState.Error
+        ) {
+            autoConnectWifi()
+        }
     }
 
     fun dismissWifiSheet() {
         showWifiSheetFlow.value = false
+    }
+
+    fun autoConnectWifi() {
+        detectedGatewayIpFlow.value = liveViewController.detectWifiGatewayIp()
+        liveViewController.autoConnect(preferredHost = wifiConfigFlow.value.host)
     }
 
     fun connectWifi(config: WifiCameraConfig) {

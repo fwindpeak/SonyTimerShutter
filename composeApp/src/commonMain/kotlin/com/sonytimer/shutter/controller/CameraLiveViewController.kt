@@ -13,6 +13,14 @@ data class WifiCameraConfig(
 
 sealed interface LiveViewConnectionState {
     data object Disconnected : LiveViewConnectionState
+    data class Searching(
+        val hint: String = "正在自动搜索相机...",
+        val elapsedSeconds: Int = 0
+    ) : LiveViewConnectionState
+    data class WaitingForConfirm(
+        val host: String,
+        val remainingSeconds: Int = 60
+    ) : LiveViewConnectionState
     data class Connecting(val stage: String) : LiveViewConnectionState
     data class Connected(
         val cameraName: String,
@@ -28,6 +36,7 @@ interface CameraLiveViewController {
     val fps: StateFlow<Int>
 
     fun detectWifiGatewayIp(): String?
+    fun autoConnect(preferredHost: String? = null)
     fun connect(config: WifiCameraConfig)
     fun disconnect()
     suspend fun triggerShutter(): Result<Unit>

@@ -160,4 +160,23 @@ class SonyPtpIpProtocolTest {
         val garbage = ByteArray(24) { 0x11 }
         assertNull(SonyPtpIpProtocol.extractLiveViewJpeg(garbage))
     }
+
+    @Test
+    fun guidHexEncodingAndDecoding_roundTripsAndRejectsInvalidInput() {
+        val guid = byteArrayOf(
+            0x01, 0x23, 0x45, 0x67,
+            0x89.toByte(), 0xAB.toByte(), 0xCD.toByte(), 0xEF.toByte(),
+            0x00, 0x10, 0x20, 0x30,
+            0xFE.toByte(), 0xDC.toByte(), 0xBA.toByte(), 0x98.toByte()
+        )
+        val hex = SonyPtpIpProtocol.encodeGuidHex(guid)
+        assertEquals("0123456789abcdef00102030fedcba98", hex)
+        assertContentEquals(guid, SonyPtpIpProtocol.decodeGuidHex(hex))
+        assertContentEquals(guid, SonyPtpIpProtocol.decodeGuidHex(hex.uppercase()))
+
+        assertNull(SonyPtpIpProtocol.decodeGuidHex(null))
+        assertNull(SonyPtpIpProtocol.decodeGuidHex(""))
+        assertNull(SonyPtpIpProtocol.decodeGuidHex("0123"))
+        assertNull(SonyPtpIpProtocol.decodeGuidHex("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"))
+    }
 }

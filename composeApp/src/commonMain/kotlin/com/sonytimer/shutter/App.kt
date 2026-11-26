@@ -171,9 +171,11 @@ fun SonyTimerShutterApp(
             if (uiState.showWifiSheet) {
                 WifiPreviewSheet(
                     liveViewState = uiState.liveViewState,
+                    bleConnectionState = uiState.connectionState,
                     initialConfig = uiState.wifiConfig,
                     detectedGatewayIp = uiState.detectedGatewayIp,
-                    onConnect = viewModel::connectWifi,
+                    onAutoConnect = viewModel::autoConnectWifi,
+                    onConnectManual = viewModel::connectWifi,
                     onDisconnect = viewModel::disconnectWifi,
                     onDismiss = viewModel::dismissWifiSheet
                 )
