@@ -36,14 +36,34 @@ object SonyPtpIpProtocol {
     const val OP_GET_DEVICE_INFO: Int = 0x1001
     const val OP_OPEN_SESSION: Int = 0x1002
     const val OP_GET_STORAGE_IDS: Int = 0x1004
+    const val OP_GET_OBJECT_HANDLES: Int = 0x1007
     const val OP_GET_OBJECT_INFO: Int = 0x1008
     const val OP_GET_OBJECT: Int = 0x1009
+    const val OP_GET_THUMB: Int = 0x100A
     const val OP_SDIO_CONNECT: Int = 0x9201
     const val OP_SDIO_GET_EXT_DEVICE_INFO: Int = 0x9202
     const val OP_SDIO_CONTROL_DEVICE: Int = 0x9207
 
     const val SDIO_PROTOCOL_VERSION: Int = 0x012C
+    const val SDRAM_IMAGE_HANDLE: Int = 0xFFFFC001.toInt()
     const val LIVEVIEW_HANDLE: Int = 0xFFFFC002.toInt()
+    const val STORAGE_ALL: Int = 0xFFFFFFFF.toInt()
+
+    // PTP Object Format Codes
+    const val FORMAT_ALL: Int = 0x0000
+    const val FORMAT_EXIF_JPEG: Int = 0x3801
+    const val FORMAT_JFIF: Int = 0x3808
+    const val FORMAT_DNG: Int = 0x3811
+    const val FORMAT_HEIF: Int = 0x3812
+    const val FORMAT_SONY_ARW: Int = 0xB101
+
+    // PTP Event Codes
+    const val EVENT_OBJECT_ADDED: Int = 0x4002
+    const val EVENT_OBJECT_REMOVED: Int = 0x4003
+    const val EVENT_STORE_ADDED: Int = 0x4004
+    const val EVENT_STORE_REMOVED: Int = 0x4005
+    const val EVENT_SONY_OBJECT_ADDED_IN_SDRAM: Int = 0xC201
+    const val EVENT_SONY_OBJECT_REMOVED_IN_SDRAM: Int = 0xC202
 
     // Shutter Control Codes & Button Values
     const val CONTROL_SHUTTER_HALF_S1: Int = 0xD2C1
@@ -79,6 +99,45 @@ object SonyPtpIpProtocol {
     data class OperationResponse(
         val responseCode: Int,
         val transactionId: Int
+    )
+
+    class PtpEventPacket(
+        val eventCode: Int,
+        val transactionId: Int,
+        val params: IntArray
+    ) {
+        val param1: Int? get() = params.getOrNull(0)
+        val param2: Int? get() = params.getOrNull(1)
+        val param3: Int? get() = params.getOrNull(2)
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is PtpEventPacket) return false
+            return eventCode == other.eventCode &&
+                transactionId == other.transactionId &&
+                params.contentEquals(other.params)
+        }
+
+        override fun hashCode(): Int {
+            var result = eventCode
+            result = 31 * result + transactionId
+            result = 31 * result + params.contentHashCode()
+            return result
+        }
+    }
+
+    data class PtpObjectInfo(
+        val storageId: Int,
+        val objectFormat: Int,
+        val compressedSize: Long,
+        val thumbFormat: Int,
+        val thumbCompressedSize: Int,
+        val thumbPixWidth: Int,
+        val thumbPixHeight: Int,
+        val imagePixWidth: Int,
+        val imagePixHeight: Int,
+        val filename: String,
+        val captureDate: String
     )
 
     fun buildInitCommandRequest(
@@ -209,6 +268,142 @@ object SonyPtpIpProtocol {
         val responseCode = readUInt16Le(body, 0)
         val transactionId = readInt32Le(body, 2)
         return OperationResponse(responseCode = responseCode, transactionId = transactionId)
+    }
+
+    /**
+     * 解析 PTP/IP Event 数据包载荷（PTPIP_EVENT = 0x0008）：
+     * - Bytes 0..1: EventCode (UINT16 LE)
+     * - Bytes 2..5: TransactionID (UINT32 LE)
+     * - Bytes 6.. : 0~3 个 UINT32 LE 参数（如 ObjectHandle）
+     */
+    fun parseEventPacket(body: ByteArray): PtpEventPacket? {
+        if (body.size < 6) return null
+        val eventCode = readUInt16Le(body, 0)
+        val transactionId = readInt32Le(body, 2)
+        val paramCount = ((body.size - 6) / 4).coerceAtLeast(0)
+        val params = IntArray(paramCount) { idx ->
+            readInt32Le(body, 6 + idx * 4)
+        }
+        return PtpEventPacket(
+            eventCode = eventCode,
+            transactionId = transactionId,
+            params = params
+        )
+    }
+
+    /**
+     * 解析标准 PTP UINT32 数组（用于 GetStorageIDs / GetObjectHandles）：
+     * - Bytes 0..3: 元素数量 count (UINT32 LE)
+     * - Bytes 4.. : count 个 UINT32 LE 元素
+     */
+    fun parseUInt32Array(data: ByteArray): IntArray {
+        if (data.size < 4) return intArrayOf()
+        val countLong = readUInt32Le(data, 0)
+        val maxPossible = (data.size - 4) / 4
+        val count = countLong.coerceAtMost(maxPossible.toLong()).toInt().coerceAtLeast(0)
+        return IntArray(count) { idx ->
+            readInt32Le(data, 4 + idx * 4)
+        }
+    }
+
+    /**
+     * 解析标准 ISO 15740 PTP ObjectInfo 数据集（GetObjectInfo 0x1008）。
+     */
+    fun parseObjectInfo(data: ByteArray): PtpObjectInfo? {
+        if (data.size < 52) return null
+        val storageId = readInt32Le(data, 0)
+        val objectFormat = readUInt16Le(data, 4)
+        val compressedSize = readUInt32Le(data, 8)
+        val thumbFormat = readUInt16Le(data, 12)
+        val thumbCompressedSize = readInt32Le(data, 14)
+        val thumbPixWidth = readInt32Le(data, 18)
+        val thumbPixHeight = readInt32Le(data, 22)
+        val imagePixWidth = readInt32Le(data, 26)
+        val imagePixHeight = readInt32Le(data, 30)
+
+        var offset = 52
+        val (filename, nextAfterName) = readPtpString(data, offset)
+        offset = nextAfterName
+        val (captureDate, _) = readPtpString(data, offset)
+
+        return PtpObjectInfo(
+            storageId = storageId,
+            objectFormat = objectFormat,
+            compressedSize = compressedSize,
+            thumbFormat = thumbFormat,
+            thumbCompressedSize = thumbCompressedSize,
+            thumbPixWidth = thumbPixWidth,
+            thumbPixHeight = thumbPixHeight,
+            imagePixWidth = imagePixWidth,
+            imagePixHeight = imagePixHeight,
+            filename = filename,
+            captureDate = captureDate
+        )
+    }
+
+    /**
+     * 读取标准 PTP String（1 字节字符数 numChars 含末尾 NUL + numChars 个 UTF-16LE 字符）。
+     */
+    fun readPtpString(bytes: ByteArray, offset: Int): Pair<String, Int> {
+        if (offset >= bytes.size) return "" to bytes.size
+        val numChars = bytes[offset].toInt() and 0xFF
+        val start = offset + 1
+        if (numChars == 0) return "" to start
+        val availableChars = ((bytes.size - start) / 2).coerceAtLeast(0)
+        val readChars = numChars.coerceAtMost(availableChars)
+        val sb = StringBuilder(readChars)
+        for (i in 0 until readChars) {
+            val pos = start + i * 2
+            val ch = (bytes[pos].toInt() and 0xFF) or ((bytes[pos + 1].toInt() and 0xFF) shl 8)
+            if (ch == 0) break
+            sb.append(ch.toChar())
+        }
+        val nextOffset = (start + readChars * 2).coerceAtMost(bytes.size)
+        return sb.toString() to nextOffset
+    }
+
+    fun isJpegFormat(formatCode: Int, filename: String = ""): Boolean {
+        if (formatCode == FORMAT_EXIF_JPEG || formatCode == FORMAT_JFIF) return true
+        val lower = filename.lowercase()
+        return lower.endsWith(".jpg") || lower.endsWith(".jpeg")
+    }
+
+    fun isRawFormat(formatCode: Int, filename: String = ""): Boolean {
+        if (formatCode == FORMAT_SONY_ARW || formatCode == FORMAT_DNG) return true
+        val lower = filename.lowercase()
+        return lower.endsWith(".arw") || lower.endsWith(".dng") || lower.endsWith(".raw")
+    }
+
+    fun isImageFormat(formatCode: Int, filename: String = ""): Boolean {
+        if (isJpegFormat(formatCode, filename) || isRawFormat(formatCode, filename)) return true
+        if (formatCode == FORMAT_HEIF) return true
+        val lower = filename.lowercase()
+        return lower.endsWith(".hif") || lower.endsWith(".heif") || lower.endsWith(".heic")
+    }
+
+    fun formatCaptureDate(raw: String): String {
+        val clean = raw.trim()
+        if (clean.length < 15) return clean
+        // PTP standard: YYYYMMDDTHHMMSS
+        if (clean[8] == 'T') {
+            val year = clean.substring(0, 4)
+            val month = clean.substring(4, 6)
+            val day = clean.substring(6, 8)
+            val hour = clean.substring(9, 11)
+            val min = clean.substring(11, 13)
+            val sec = clean.substring(13, 15)
+            return "$year-$month-$day $hour:$min:$sec"
+        }
+        return clean
+    }
+
+    fun formatFileSize(bytes: Long): String {
+        if (bytes <= 0L) return "--"
+        val kb = bytes / 1024.0
+        if (kb < 1024.0) return "${kb.toInt()} KB"
+        val mb = kb / 1024.0
+        val rounded = ((mb * 10.0).toInt()) / 10.0
+        return "$rounded MB"
     }
 
     /**

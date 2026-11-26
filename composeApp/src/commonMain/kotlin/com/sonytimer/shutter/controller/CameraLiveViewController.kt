@@ -39,6 +39,7 @@ interface CameraLiveViewController {
     fun autoConnect(preferredHost: String? = null)
     fun connect(config: WifiCameraConfig)
     fun disconnect()
+    fun setLiveViewPaused(paused: Boolean) {}
     suspend fun triggerShutter(): Result<Unit>
     fun release()
 }

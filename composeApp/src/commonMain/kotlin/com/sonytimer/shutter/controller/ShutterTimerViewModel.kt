@@ -9,7 +9,10 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 sealed interface ShutterPhase {
     data object Idle : ShutterPhase
@@ -28,6 +31,35 @@ sealed interface ShutterPhase {
         val totalShots: Int = 1
     ) : ShutterPhase
 }
+
+data class GalleryDownloadProgress(
+    val photoKey: String,
+    val bytesRead: Long,
+    val totalBytes: Long
+) {
+    val fraction: Float
+        get() = if (totalBytes > 0L) {
+            (bytesRead.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
+        } else {
+            0f
+        }
+}
+
+data class GalleryUiState(
+    val isOpen: Boolean = false,
+    val activeTransport: PtpTransportMode = PtpTransportMode.WIFI_PTP_IP,
+    val usbState: UsbConnectionState = UsbConnectionState.Disconnected,
+    val photos: List<CameraPhotoItem> = emptyList(),
+    val thumbnails: Map<String, ImageBitmap> = emptyMap(),
+    val loadingThumbKeys: Set<String> = emptySet(),
+    val failedThumbKeys: Set<String> = emptySet(),
+    val isLoadingList: Boolean = false,
+    val errorMessage: String? = null,
+    val selectedPhotoKey: String? = null,
+    val downloadProgress: GalleryDownloadProgress? = null,
+    val downloadedPhotos: Map<String, SavedPhotoResult> = emptyMap(),
+    val newPhotoBadgeCount: Int = 0
+)
 
 private data class TimerConfigSnapshot(
     val configuredSeconds: Int,
@@ -73,13 +105,20 @@ data class ShutterUiState(
     val showWifiSheet: Boolean = false,
     val wifiConfig: WifiCameraConfig = WifiCameraConfig(),
     val detectedGatewayIp: String? = null,
-    val remoteTriggerEnabled: Boolean = true
+    val remoteTriggerEnabled: Boolean = true,
+    val gallery: GalleryUiState = GalleryUiState()
 ) {
     val isBleConnected: Boolean
         get() = connectionState is BleConnectionState.Connected
 
     val isWifiConnected: Boolean
         get() = liveViewState is LiveViewConnectionState.Connected
+
+    val isUsbConnected: Boolean
+        get() = gallery.usbState is UsbConnectionState.Connected
+
+    val isGalleryAvailable: Boolean
+        get() = isWifiConnected || isUsbConnected
 
     val isAnyCameraConnected: Boolean
         get() = isBleConnected || isWifiConnected
@@ -89,6 +128,7 @@ class ShutterTimerViewModel(
     private val scope: CoroutineScope,
     private val bleController: CameraBleController,
     private val liveViewController: CameraLiveViewController,
+    private val galleryController: CameraGalleryController,
     private val feedbackPlayer: FeedbackPlayer,
     private val preferences: TimerPreferences
 ) {
@@ -126,9 +166,13 @@ class ShutterTimerViewModel(
         )
     )
     private val detectedGatewayIpFlow = MutableStateFlow<String?>(null)
+    private val galleryFlow = MutableStateFlow(GalleryUiState())
 
     private var countdownJob: Job? = null
     private var hintJob: Job? = null
+    private var galleryListJob: Job? = null
+    private var galleryDownloadJob: Job? = null
+    private val thumbnailSemaphore = Semaphore(1)
     private var cancelBurstAfterCurrentShot = false
 
     init {
@@ -147,6 +191,35 @@ class ShutterTimerViewModel(
                     showTemporaryHint("已连接 ${state.cameraName} 实时预览", durationMs = 2_400L)
                 }
                 wasConnected = isNowConnected
+            }
+        }
+
+        scope.launch {
+            var wasUsbConnected = false
+            galleryController.usbState.collect { usb ->
+                galleryFlow.update { it.copy(usbState = usb) }
+                val isNowUsb = usb is UsbConnectionState.Connected
+                if (usb is UsbConnectionState.Connected && !wasUsbConnected) {
+                    showTemporaryHint("USB 已连接 ${usb.productName}，可高速查看图库", durationMs = 2_800L)
+                    if (galleryFlow.value.isOpen &&
+                        galleryFlow.value.activeTransport == PtpTransportMode.USB_MTP
+                    ) {
+                        refreshGallery()
+                    }
+                } else if (usb is UsbConnectionState.Error) {
+                    if (galleryFlow.value.isOpen &&
+                        galleryFlow.value.activeTransport == PtpTransportMode.USB_MTP
+                    ) {
+                        galleryFlow.update { it.copy(errorMessage = usb.message, isLoadingList = false) }
+                    }
+                }
+                wasUsbConnected = isNowUsb
+            }
+        }
+
+        scope.launch {
+            galleryController.events.collect { event ->
+                handlePtpEvent(event)
             }
         }
     }
@@ -213,7 +286,8 @@ class ShutterTimerViewModel(
         phaseFlow,
         showTimerSheetFlow,
         statusHintFlow,
-        liveViewSnapshotFlow
+        liveViewSnapshotFlow,
+        galleryFlow
     ) { values ->
         val ble = values[0] as BleSnapshot
         val timer = values[1] as TimerConfigSnapshot
@@ -221,6 +295,7 @@ class ShutterTimerViewModel(
         val showTimer = values[3] as Boolean
         val hint = values[4] as String?
         val lv = values[5] as LiveViewSnapshot
+        val gallery = values[6] as GalleryUiState
         ShutterUiState(
             connectionState = ble.connectionState,
             phase = phase,
@@ -240,7 +315,8 @@ class ShutterTimerViewModel(
             showWifiSheet = lv.showWifiSheet,
             wifiConfig = lv.wifiConfig,
             detectedGatewayIp = lv.detectedGatewayIp,
-            remoteTriggerEnabled = timer.remoteTriggerEnabled
+            remoteTriggerEnabled = timer.remoteTriggerEnabled,
+            gallery = gallery
         )
     }.stateIn(
         scope = scope,
@@ -252,7 +328,8 @@ class ShutterTimerViewModel(
             burstIntervalSeconds = burstIntervalSecondsFlow.value,
             isPreviewMirrored = isPreviewMirroredFlow.value,
             wifiConfig = wifiConfigFlow.value,
-            remoteTriggerEnabled = remoteTriggerEnabledFlow.value
+            remoteTriggerEnabled = remoteTriggerEnabledFlow.value,
+            gallery = galleryFlow.value
         )
     )
 
@@ -289,7 +366,11 @@ class ShutterTimerViewModel(
      */
     fun onRemoteShutterTrigger(sourceLabel: String = "手环/遥控") {
         if (!remoteTriggerEnabledFlow.value) return
-        if (showCameraPickerFlow.value || showTimerSheetFlow.value || showWifiSheetFlow.value) {
+        if (showCameraPickerFlow.value ||
+            showTimerSheetFlow.value ||
+            showWifiSheetFlow.value ||
+            galleryFlow.value.isOpen
+        ) {
             return
         }
 
@@ -540,11 +621,304 @@ class ShutterTimerViewModel(
         }
     }
 
+    fun openGallery(preferredTransport: PtpTransportMode? = null) {
+        val usbReady = galleryFlow.value.usbState is UsbConnectionState.Connected
+        val wifiReady = liveViewController.connectionState.value is LiveViewConnectionState.Connected
+        val targetMode = when {
+            preferredTransport == PtpTransportMode.USB_MTP -> PtpTransportMode.USB_MTP
+            preferredTransport == PtpTransportMode.WIFI_PTP_IP -> PtpTransportMode.WIFI_PTP_IP
+            usbReady -> PtpTransportMode.USB_MTP
+            wifiReady -> PtpTransportMode.WIFI_PTP_IP
+            else -> PtpTransportMode.USB_MTP
+        }
+
+        showWifiSheetFlow.value = false
+        galleryController.setGalleryActive(true)
+        galleryFlow.update {
+            it.copy(
+                isOpen = true,
+                activeTransport = targetMode,
+                errorMessage = null,
+                selectedPhotoKey = null,
+                newPhotoBadgeCount = 0
+            )
+        }
+        if (targetMode == PtpTransportMode.USB_MTP && !usbReady) {
+            galleryController.scanAndConnectUsb()
+        } else {
+            refreshGallery()
+        }
+    }
+
+    fun dismissGallery() {
+        galleryListJob?.cancel()
+        galleryListJob = null
+        galleryController.setGalleryActive(false)
+        galleryFlow.update {
+            it.copy(
+                isOpen = false,
+                selectedPhotoKey = null
+            )
+        }
+    }
+
+    fun switchGalleryTransport(mode: PtpTransportMode) {
+        if (galleryFlow.value.activeTransport == mode && galleryFlow.value.photos.isNotEmpty()) {
+            return
+        }
+        galleryListJob?.cancel()
+        galleryFlow.update {
+            it.copy(
+                activeTransport = mode,
+                photos = emptyList(),
+                errorMessage = null,
+                selectedPhotoKey = null,
+                isLoadingList = false
+            )
+        }
+        val isReady = when (mode) {
+            PtpTransportMode.WIFI_PTP_IP ->
+                liveViewController.connectionState.value is LiveViewConnectionState.Connected
+            PtpTransportMode.USB_MTP ->
+                galleryFlow.value.usbState is UsbConnectionState.Connected
+        }
+        if (mode == PtpTransportMode.USB_MTP && !isReady) {
+            galleryController.scanAndConnectUsb()
+        } else if (isReady) {
+            refreshGallery()
+        } else {
+            galleryFlow.update {
+                it.copy(errorMessage = "Wi-Fi 实时预览未连接，请先连接相机 Wi-Fi 或切换至 USB 有线")
+            }
+        }
+    }
+
+    fun scanAndConnectUsb() {
+        galleryController.scanAndConnectUsb()
+    }
+
+    fun disconnectUsb() {
+        galleryController.disconnectUsb()
+    }
+
+    fun refreshGallery() {
+        val mode = galleryFlow.value.activeTransport
+        val isReady = when (mode) {
+            PtpTransportMode.WIFI_PTP_IP ->
+                liveViewController.connectionState.value is LiveViewConnectionState.Connected
+            PtpTransportMode.USB_MTP ->
+                galleryFlow.value.usbState is UsbConnectionState.Connected
+        }
+        if (!isReady) {
+            galleryFlow.update {
+                it.copy(
+                    isLoadingList = false,
+                    errorMessage = if (mode == PtpTransportMode.USB_MTP) {
+                        "未检测到 USB 相机，请插入 Type-C 数据线并将相机 USB 模式设为「MTP」或「电脑遥控」"
+                    } else {
+                        "Wi-Fi 实时预览未连接，请先连接相机 Wi-Fi"
+                    }
+                )
+            }
+            return
+        }
+
+        galleryListJob?.cancel()
+        galleryFlow.update { it.copy(isLoadingList = true, errorMessage = null) }
+        galleryListJob = scope.launch {
+            val result = galleryController.listPhotos(mode)
+            result.fold(
+                onSuccess = { list ->
+                    galleryFlow.update { state ->
+                        if (state.activeTransport != mode) return@update state
+                        state.copy(
+                            photos = list,
+                            isLoadingList = false,
+                            errorMessage = null
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    galleryFlow.update { state ->
+                        if (state.activeTransport != mode) return@update state
+                        state.copy(
+                            isLoadingList = false,
+                            errorMessage = error.message ?: "读取相机图库失败"
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    fun requestThumbnail(item: CameraPhotoItem) {
+        val key = item.stableKey
+        val snap = galleryFlow.value
+        if (!item.isSdram && (key in snap.thumbnails || key in snap.loadingThumbKeys || key in snap.failedThumbKeys)) {
+            return
+        }
+        if (item.isSdram && key in snap.loadingThumbKeys) {
+            return
+        }
+
+        galleryFlow.update { it.copy(loadingThumbKeys = it.loadingThumbKeys + key) }
+        scope.launch {
+            thumbnailSemaphore.withPermit {
+                if (!galleryFlow.value.isOpen || galleryFlow.value.activeTransport != item.transport) {
+                    galleryFlow.update { it.copy(loadingThumbKeys = it.loadingThumbKeys - key) }
+                    return@withPermit
+                }
+                val result = galleryController.loadThumbnail(item)
+                result.fold(
+                    onSuccess = { loaded ->
+                        galleryFlow.update { state ->
+                            val updatedList = state.photos.map { existing ->
+                                if (existing.stableKey == key) loaded.updatedItem else existing
+                            }
+                            val updatedThumbs = if (loaded.thumbnail != null) {
+                                state.thumbnails + (key to loaded.thumbnail)
+                            } else {
+                                state.thumbnails
+                            }
+                            val updatedFailed = if (loaded.thumbnail == null) {
+                                state.failedThumbKeys + key
+                            } else {
+                                state.failedThumbKeys - key
+                            }
+                            state.copy(
+                                photos = updatedList,
+                                thumbnails = updatedThumbs,
+                                loadingThumbKeys = state.loadingThumbKeys - key,
+                                failedThumbKeys = updatedFailed
+                            )
+                        }
+                    },
+                    onFailure = {
+                        galleryFlow.update { state ->
+                            state.copy(
+                                loadingThumbKeys = state.loadingThumbKeys - key,
+                                failedThumbKeys = state.failedThumbKeys + key
+                            )
+                        }
+                    }
+                )
+            }
+        }
+    }
+
+    fun selectGalleryPhoto(item: CameraPhotoItem?) {
+        galleryFlow.update { it.copy(selectedPhotoKey = item?.stableKey) }
+        if (item != null && (!item.metadataLoaded || item.stableKey !in galleryFlow.value.thumbnails)) {
+            requestThumbnail(item)
+        }
+    }
+
+    fun downloadOriginalPhoto(item: CameraPhotoItem) {
+        if (galleryFlow.value.downloadProgress != null) return
+        val key = item.stableKey
+        galleryDownloadJob?.cancel()
+        galleryFlow.update {
+            it.copy(
+                downloadProgress = GalleryDownloadProgress(
+                    photoKey = key,
+                    bytesRead = 0L,
+                    totalBytes = item.sizeBytes
+                )
+            )
+        }
+        galleryDownloadJob = scope.launch {
+            val result = galleryController.downloadOriginal(item) { read, total ->
+                galleryFlow.update { state ->
+                    state.copy(
+                        downloadProgress = GalleryDownloadProgress(
+                            photoKey = key,
+                            bytesRead = read,
+                            totalBytes = if (total > 0L) total else item.sizeBytes
+                        )
+                    )
+                }
+            }
+            result.fold(
+                onSuccess = { saved ->
+                    galleryFlow.update { state ->
+                        state.copy(
+                            downloadProgress = null,
+                            downloadedPhotos = state.downloadedPhotos + (key to saved)
+                        )
+                    }
+                    showTemporaryHint("原图已保存到相册：${saved.filename}", durationMs = 3_200L)
+                },
+                onFailure = { err ->
+                    galleryFlow.update { it.copy(downloadProgress = null) }
+                    showTemporaryHint(
+                        "原图下载失败：${err.message ?: "请检查连接状态"}",
+                        durationMs = 4_000L
+                    )
+                }
+            )
+        }
+    }
+
+    private fun handlePtpEvent(event: PtpEvent) {
+        when (event) {
+            is PtpEvent.ObjectAdded -> {
+                val state = galleryFlow.value
+                if (state.isOpen && state.activeTransport == event.transport) {
+                    val newItem = CameraPhotoItem(
+                        handle = event.handle,
+                        transport = event.transport,
+                        isSdram = event.isSdram,
+                        metadataLoaded = false
+                    )
+                    galleryFlow.update { cur ->
+                        val deduped = cur.photos.filterNot { it.stableKey == newItem.stableKey }
+                        cur.copy(
+                            photos = listOf(newItem) + deduped,
+                            failedThumbKeys = cur.failedThumbKeys - newItem.stableKey
+                        )
+                    }
+                    requestThumbnail(newItem)
+                } else {
+                    galleryFlow.update { it.copy(newPhotoBadgeCount = it.newPhotoBadgeCount + 1) }
+                    showTemporaryHint("新拍照片已就绪，点击「图库」即可查看", durationMs = 2_400L)
+                }
+            }
+            is PtpEvent.ObjectRemoved -> {
+                galleryFlow.update { cur ->
+                    val remaining = cur.photos.filterNot {
+                        it.transport == event.transport && it.handle == event.handle
+                    }
+                    cur.copy(photos = remaining)
+                }
+            }
+            is PtpEvent.StorageChanged -> {
+                val state = galleryFlow.value
+                if (state.isOpen && state.activeTransport == event.transport) {
+                    refreshGallery()
+                }
+            }
+            is PtpEvent.TransportDisconnected -> {
+                val state = galleryFlow.value
+                if (state.isOpen && state.activeTransport == event.transport) {
+                    galleryFlow.update {
+                        it.copy(
+                            isLoadingList = false,
+                            errorMessage = event.reason ?: "${event.transport.label} 连接已断开"
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     fun onCleared() {
         countdownJob?.cancel()
         hintJob?.cancel()
+        galleryListJob?.cancel()
+        galleryDownloadJob?.cancel()
         bleController.release()
         liveViewController.release()
+        galleryController.release()
         feedbackPlayer.release()
     }
 

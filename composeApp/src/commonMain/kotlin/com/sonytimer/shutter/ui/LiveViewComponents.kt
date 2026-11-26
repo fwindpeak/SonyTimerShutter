@@ -132,12 +132,64 @@ fun LiveViewStatusPill(
 }
 
 @Composable
+fun GalleryStatusPill(
+    isUsbConnected: Boolean,
+    newPhotoBadgeCount: Int,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val dotColor = if (isUsbConnected) Color(0xFF34D399) else Color(0xFF38BDF8)
+    val borderColor = if (isUsbConnected) {
+        Color(0xFF34D399).copy(alpha = 0.32f)
+    } else {
+        Color(0xFF38BDF8).copy(alpha = 0.28f)
+    }
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(Color(0xFF1C1F24).copy(alpha = 0.85f))
+            .border(1.dp, borderColor, RoundedCornerShape(999.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Canvas(modifier = Modifier.size(7.dp)) {
+            drawCircle(color = dotColor)
+        }
+        Text(
+            text = if (isUsbConnected) "USB图库" else "图库",
+            color = Color(0xFFE5E7EB),
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium,
+            fontFamily = FontFamily.Monospace,
+            maxLines = 1
+        )
+        if (newPhotoBadgeCount > 0) {
+            Text(
+                text = "+$newPhotoBadgeCount",
+                color = Color.White,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(Color(0xFFDC2626))
+                    .padding(horizontal = 5.dp, vertical = 1.dp)
+            )
+        }
+    }
+}
+
+@Composable
 fun LiveViewPreviewCard(
     frame: ImageBitmap?,
     fps: Int,
     isMirrored: Boolean,
     phase: ShutterPhase,
     onToggleMirror: () -> Unit,
+    onOpenGallery: () -> Unit = {},
+    newPhotoBadgeCount: Int = 0,
     modifier: Modifier = Modifier
 ) {
     val shape = RoundedCornerShape(20.dp)
@@ -190,6 +242,67 @@ fun LiveViewPreviewCard(
                 fontWeight = FontWeight.SemiBold,
                 fontFamily = FontFamily.Monospace
             )
+        }
+
+        // 左下角相机图库入口
+        Row(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(12.dp)
+                .clip(RoundedCornerShape(999.dp))
+                .background(Color.Black.copy(alpha = 0.62f))
+                .border(
+                    width = 1.dp,
+                    color = if (newPhotoBadgeCount > 0) Color(0xFF34D399).copy(alpha = 0.7f)
+                    else Color.White.copy(alpha = 0.16f),
+                    shape = RoundedCornerShape(999.dp)
+                )
+                .clickable(onClick = onOpenGallery)
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            // 矢量相册图标
+            Canvas(modifier = Modifier.size(14.dp)) {
+                val w = size.width
+                val h = size.height
+                drawRoundRect(
+                    color = Color.White,
+                    topLeft = Offset(w * 0.08f, h * 0.14f),
+                    size = Size(w * 0.84f, h * 0.72f),
+                    cornerRadius = CornerRadius(2.dp.toPx()),
+                    style = Stroke(width = 1.3.dp.toPx())
+                )
+                val mountain = Path().apply {
+                    moveTo(w * 0.18f, h * 0.74f)
+                    lineTo(w * 0.42f, h * 0.46f)
+                    lineTo(w * 0.60f, h * 0.64f)
+                    lineTo(w * 0.74f, h * 0.50f)
+                    lineTo(w * 0.84f, h * 0.74f)
+                    close()
+                }
+                drawPath(path = mountain, color = Color.White)
+            }
+            Text(
+                text = "图库",
+                color = Color.White,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                fontFamily = FontFamily.Monospace
+            )
+            if (newPhotoBadgeCount > 0) {
+                Text(
+                    text = "+$newPhotoBadgeCount",
+                    color = Color.White,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(Color(0xFF10B981))
+                        .padding(horizontal = 5.dp, vertical = 1.dp)
+                )
+            }
         }
 
         // 右下角自拍水平镜像开关

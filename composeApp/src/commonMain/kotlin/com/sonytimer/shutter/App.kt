@@ -27,10 +27,14 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.sonytimer.shutter.controller.PtpTransportMode
 import com.sonytimer.shutter.controller.ShutterPhase
 import com.sonytimer.shutter.controller.ShutterTimerViewModel
+import com.sonytimer.shutter.controller.UsbConnectionState
 import com.sonytimer.shutter.ui.BluetoothStatusBar
+import com.sonytimer.shutter.ui.CameraGalleryOverlay
 import com.sonytimer.shutter.ui.CameraPickerSheet
+import com.sonytimer.shutter.ui.GalleryStatusPill
 import com.sonytimer.shutter.ui.IndustrialMechanicalButton
 import com.sonytimer.shutter.ui.KeepScreenOnEffect
 import com.sonytimer.shutter.ui.LiveViewPreviewCard
@@ -47,6 +51,7 @@ fun SonyTimerShutterApp(
 
     KeepScreenOnEffect(
         enabled = uiState.isWifiConnected ||
+            uiState.gallery.isOpen ||
             uiState.phase is ShutterPhase.CountingDown ||
             uiState.phase is ShutterPhase.Triggering
     )
@@ -78,6 +83,7 @@ fun SonyTimerShutterApp(
                         uiState = uiState,
                         onBleClick = viewModel::openCameraPicker,
                         onWifiClick = viewModel::openWifiSheet,
+                        onGalleryClick = { viewModel.openGallery() },
                         modifier = Modifier.padding(top = 16.dp, bottom = 12.dp)
                     )
 
@@ -87,6 +93,8 @@ fun SonyTimerShutterApp(
                         isMirrored = uiState.isPreviewMirrored,
                         phase = uiState.phase,
                         onToggleMirror = viewModel::togglePreviewMirror,
+                        onOpenGallery = { viewModel.openGallery(PtpTransportMode.WIFI_PTP_IP) },
+                        newPhotoBadgeCount = uiState.gallery.newPhotoBadgeCount,
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f)
@@ -113,6 +121,7 @@ fun SonyTimerShutterApp(
                     uiState = uiState,
                     onBleClick = viewModel::openCameraPicker,
                     onWifiClick = viewModel::openWifiSheet,
+                    onGalleryClick = { viewModel.openGallery(PtpTransportMode.USB_MTP) },
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .padding(top = 24.dp, start = 16.dp, end = 16.dp)
@@ -177,7 +186,24 @@ fun SonyTimerShutterApp(
                     onAutoConnect = viewModel::autoConnectWifi,
                     onConnectManual = viewModel::connectWifi,
                     onDisconnect = viewModel::disconnectWifi,
+                    onOpenWifiGallery = { viewModel.openGallery(PtpTransportMode.WIFI_PTP_IP) },
+                    onOpenUsbGallery = { viewModel.openGallery(PtpTransportMode.USB_MTP) },
                     onDismiss = viewModel::dismissWifiSheet
+                )
+            }
+
+            // 相机图库全屏浮层（支持 Wi-Fi PTP/IP 与 USB MTP 有线缩略图预览及原图下载）
+            if (uiState.gallery.isOpen) {
+                CameraGalleryOverlay(
+                    galleryState = uiState.gallery,
+                    isWifiConnected = uiState.isWifiConnected,
+                    onSwitchTransport = viewModel::switchGalleryTransport,
+                    onScanUsb = viewModel::scanAndConnectUsb,
+                    onRefresh = viewModel::refreshGallery,
+                    onRequestThumbnail = viewModel::requestThumbnail,
+                    onSelectPhoto = viewModel::selectGalleryPhoto,
+                    onDownloadOriginal = viewModel::downloadOriginalPhoto,
+                    onDismiss = viewModel::dismissGallery
                 )
             }
         }
@@ -189,11 +215,14 @@ private fun TopStatusRow(
     uiState: com.sonytimer.shutter.controller.ShutterUiState,
     onBleClick: () -> Unit,
     onWifiClick: () -> Unit,
+    onGalleryClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val showUsbPill = uiState.isUsbConnected ||
+        uiState.gallery.usbState is UsbConnectionState.PermissionRequired
     Row(
         modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically
     ) {
         BluetoothStatusBar(
@@ -206,6 +235,13 @@ private fun TopStatusRow(
             liveViewState = uiState.liveViewState,
             onClick = onWifiClick
         )
+        if (showUsbPill) {
+            GalleryStatusPill(
+                isUsbConnected = uiState.isUsbConnected,
+                newPhotoBadgeCount = uiState.gallery.newPhotoBadgeCount,
+                onClick = onGalleryClick
+            )
+        }
     }
 }
 

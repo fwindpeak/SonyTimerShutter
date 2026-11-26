@@ -179,4 +179,103 @@ class SonyPtpIpProtocolTest {
         assertNull(SonyPtpIpProtocol.decodeGuidHex("0123"))
         assertNull(SonyPtpIpProtocol.decodeGuidHex("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"))
     }
+
+    @Test
+    fun parseEventPacket_parsesObjectAddedAndSonySdramEvents() {
+        // ObjectAdded (0x4002), txId=0, param1=0x0001002A
+        val body = ByteArray(10)
+        SonyPtpIpProtocol.writeUInt16Le(body, 0, SonyPtpIpProtocol.EVENT_OBJECT_ADDED)
+        SonyPtpIpProtocol.writeInt32Le(body, 2, 0)
+        SonyPtpIpProtocol.writeInt32Le(body, 6, 0x0001002A)
+
+        val evt = SonyPtpIpProtocol.parseEventPacket(body)
+        assertNotNull(evt)
+        assertEquals(SonyPtpIpProtocol.EVENT_OBJECT_ADDED, evt.eventCode)
+        assertEquals(0, evt.transactionId)
+        assertEquals(0x0001002A, evt.param1)
+
+        // Sony ObjectAddedInSDRAM (0xC201) without params
+        val sdramBody = ByteArray(6)
+        SonyPtpIpProtocol.writeUInt16Le(sdramBody, 0, SonyPtpIpProtocol.EVENT_SONY_OBJECT_ADDED_IN_SDRAM)
+        SonyPtpIpProtocol.writeInt32Le(sdramBody, 2, 12)
+        val sdramEvt = SonyPtpIpProtocol.parseEventPacket(sdramBody)
+        assertNotNull(sdramEvt)
+        assertEquals(SonyPtpIpProtocol.EVENT_SONY_OBJECT_ADDED_IN_SDRAM, sdramEvt.eventCode)
+        assertEquals(12, sdramEvt.transactionId)
+        assertNull(sdramEvt.param1)
+
+        // Truncated packet returns null
+        assertNull(SonyPtpIpProtocol.parseEventPacket(ByteArray(4)))
+    }
+
+    @Test
+    fun parseUInt32Array_decodesHandlesAndGuardsTruncation() {
+        val data = ByteArray(4 + 3 * 4)
+        SonyPtpIpProtocol.writeInt32Le(data, 0, 3)
+        SonyPtpIpProtocol.writeInt32Le(data, 4, 0x00010001)
+        SonyPtpIpProtocol.writeInt32Le(data, 8, 0x00010002)
+        SonyPtpIpProtocol.writeInt32Le(data, 12, 0x00010003)
+
+        assertContentEquals(
+            intArrayOf(0x00010001, 0x00010002, 0x00010003),
+            SonyPtpIpProtocol.parseUInt32Array(data)
+        )
+
+        // Declared count exceeds available bytes -> safely clamped
+        val truncated = ByteArray(8)
+        SonyPtpIpProtocol.writeInt32Le(truncated, 0, 100)
+        SonyPtpIpProtocol.writeInt32Le(truncated, 4, 0x1234)
+        assertContentEquals(intArrayOf(0x1234), SonyPtpIpProtocol.parseUInt32Array(truncated))
+
+        assertContentEquals(intArrayOf(), SonyPtpIpProtocol.parseUInt32Array(ByteArray(2)))
+    }
+
+    @Test
+    fun parseObjectInfo_decodesStandardDatasetAndStrings() {
+        val filename = "DSC00421.JPG"
+        val captureDate = "20261126T103045"
+        val nameBytes = encodePtpString(filename)
+        val dateBytes = encodePtpString(captureDate)
+
+        val data = ByteArray(52 + nameBytes.size + dateBytes.size)
+        SonyPtpIpProtocol.writeInt32Le(data, 0, 0x00010001) // storageId
+        SonyPtpIpProtocol.writeUInt16Le(data, 4, SonyPtpIpProtocol.FORMAT_EXIF_JPEG)
+        SonyPtpIpProtocol.writeInt32Le(data, 8, 12_582_912) // 12 MB
+        SonyPtpIpProtocol.writeUInt16Le(data, 12, SonyPtpIpProtocol.FORMAT_EXIF_JPEG)
+        SonyPtpIpProtocol.writeInt32Le(data, 14, 32_768) // thumb size
+        SonyPtpIpProtocol.writeInt32Le(data, 18, 160) // thumb W
+        SonyPtpIpProtocol.writeInt32Le(data, 22, 120) // thumb H
+        SonyPtpIpProtocol.writeInt32Le(data, 26, 7008) // image W
+        SonyPtpIpProtocol.writeInt32Le(data, 30, 4672) // image H
+        nameBytes.copyInto(data, destinationOffset = 52)
+        dateBytes.copyInto(data, destinationOffset = 52 + nameBytes.size)
+
+        val info = SonyPtpIpProtocol.parseObjectInfo(data)
+        assertNotNull(info)
+        assertEquals(0x00010001, info.storageId)
+        assertEquals(SonyPtpIpProtocol.FORMAT_EXIF_JPEG, info.objectFormat)
+        assertEquals(12_582_912L, info.compressedSize)
+        assertEquals(32_768, info.thumbCompressedSize)
+        assertEquals(7008, info.imagePixWidth)
+        assertEquals(4672, info.imagePixHeight)
+        assertEquals(filename, info.filename)
+        assertEquals(captureDate, info.captureDate)
+        assertEquals("2026-11-26 10:30:45", SonyPtpIpProtocol.formatCaptureDate(info.captureDate))
+        assertEquals("12.0 MB", SonyPtpIpProtocol.formatFileSize(info.compressedSize))
+        assertEquals(true, SonyPtpIpProtocol.isJpegFormat(info.objectFormat, info.filename))
+        assertEquals(false, SonyPtpIpProtocol.isRawFormat(info.objectFormat, info.filename))
+        assertEquals(true, SonyPtpIpProtocol.isRawFormat(SonyPtpIpProtocol.FORMAT_SONY_ARW, "DSC00421.ARW"))
+    }
+
+    private fun encodePtpString(text: String): ByteArray {
+        val numChars = text.length + 1
+        val out = ByteArray(1 + numChars * 2)
+        out[0] = numChars.toByte()
+        for (i in text.indices) {
+            val code = text[i].code
+            out[1 + i * 2] = (code and 0xFF).toByte()
+            out[1 + i * 2 + 1] = ((code ushr 8) and 0xFF).toByte()
+        }
+        return out
+    }
 }

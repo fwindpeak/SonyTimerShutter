@@ -1,6 +1,7 @@
 package com.sonytimer.shutter
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -11,11 +12,13 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import com.sonytimer.shutter.android.AndroidCameraGalleryController
 import com.sonytimer.shutter.android.AndroidFeedbackPlayer
 import com.sonytimer.shutter.android.AndroidRemoteShutterTrigger
 import com.sonytimer.shutter.android.AndroidSonyBleController
 import com.sonytimer.shutter.android.AndroidSonyLiveViewController
 import com.sonytimer.shutter.android.AndroidTimerPreferences
+import com.sonytimer.shutter.android.AndroidUsbMtpTransport
 import com.sonytimer.shutter.controller.ShutterPhase
 import com.sonytimer.shutter.controller.ShutterTimerViewModel
 import kotlinx.coroutines.CoroutineScope
@@ -29,6 +32,7 @@ class MainActivity : ComponentActivity() {
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private lateinit var viewModel: ShutterTimerViewModel
     private lateinit var remoteShutterTrigger: AndroidRemoteShutterTrigger
+    private lateinit var usbMtpTransport: AndroidUsbMtpTransport
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -65,15 +69,24 @@ class MainActivity : ComponentActivity() {
                 }
             }
         )
+        usbMtpTransport = AndroidUsbMtpTransport(context = this)
+        val galleryController = AndroidCameraGalleryController(
+            context = this,
+            wifiTransport = liveViewController,
+            usbTransport = usbMtpTransport
+        )
         val feedbackPlayer = AndroidFeedbackPlayer(this)
 
         viewModel = ShutterTimerViewModel(
             scope = appScope,
             bleController = bleController,
             liveViewController = liveViewController,
+            galleryController = galleryController,
             feedbackPlayer = feedbackPlayer,
             preferences = preferences
         )
+
+        usbMtpTransport.handleUsbAttachedIntent(intent)
 
         remoteShutterTrigger = AndroidRemoteShutterTrigger(
             context = this,
@@ -82,7 +95,10 @@ class MainActivity : ComponentActivity() {
 
         appScope.launch {
             viewModel.uiState.collect { state ->
-                val hasOpenSheet = state.showTimerSheet || state.showCameraPicker || state.showWifiSheet
+                val hasOpenSheet = state.showTimerSheet ||
+                    state.showCameraPicker ||
+                    state.showWifiSheet ||
+                    state.gallery.isOpen
                 remoteShutterTrigger.setEnabled(state.remoteTriggerEnabled && !hasOpenSheet)
 
                 val (title, subtitle) = when (val phase = state.phase) {
@@ -110,6 +126,14 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             SonyTimerShutterApp(viewModel = viewModel)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (::usbMtpTransport.isInitialized) {
+            usbMtpTransport.handleUsbAttachedIntent(intent)
         }
     }
 

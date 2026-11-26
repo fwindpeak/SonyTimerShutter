@@ -2,6 +2,14 @@
 
 本文档记录 **SonyTimerShutter** 的主要版本更新内容，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [v1.3.0] - 2026-11-26
+
+### 新增 (Added)
+- **相机图库浏览与按需下载原图（Wi-Fi + USB 双通道）**：连接快速预览后可直接点击取景框左下角「图库」（或顶部 USB 图库入口）查看相机内照片，支持 3 列网格按需懒加载 EXIF 缩略图、全屏查看单张照片详情与分辨率/大小/拍摄时间，并支持一键流式下载完整原图至手机相册（`Pictures/SonyTimerShutter`）。
+- **室外模式 — 纯 Kotlin 零依赖 USB 有线传输（Android 原生 `MtpDevice`）**：配置索尼官方 VID (`0x054C` / `1356`) 的 USB 即插即用过滤器与权限自动申请，支持通过 Type-C 数据线直连手机，毫秒级拉取全卡缩略图、原生流式导出原图，并后台监听 `MtpDevice.readEvent()` 新拍照片事件。
+- **室内模式 — Wi-Fi PTP/IP 图库与新拍自动推送**：复用已连接的 PTP/IP 双通道 TCP 会话（端口 `15740`），实现 `GetStorageIDs`、`GetObjectHandles`、`GetObjectInfo`、`GetThumb` 与流式 `GetObject` 原图下载；支持监听标准 `ObjectAdded (0x4002)` 与索尼内存直传 `ObjectAddedInSDRAM (0xC201 / 0xFFFFC001)` 事件，快门拍完后新图自动出现在图库顶部。
+- **统一 PTP 传输抽象层（`PtpTransport` / `Flow<PtpEvent>`）**：USB MTP 与 Wi-Fi PTP/IP 共享统一的图库控制器、缩略图 LRU 缓存、事件流与通道一键切换体验；进入图库时自动暂停 Wi-Fi 实时预览轮询以释放全部带宽，退出图库后无缝恢复实时画面。
+
 ## [v1.2.1] - 2026-11-26
 
 ### 优化与改进 (Changed)

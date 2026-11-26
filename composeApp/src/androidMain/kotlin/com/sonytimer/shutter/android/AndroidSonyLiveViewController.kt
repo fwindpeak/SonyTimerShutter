@@ -13,7 +13,10 @@ import com.jcraft.jsch.Session
 import com.jcraft.jsch.UIKeyboardInteractive
 import com.jcraft.jsch.UserInfo
 import com.sonytimer.shutter.controller.CameraLiveViewController
+import com.sonytimer.shutter.controller.CameraPhotoItem
 import com.sonytimer.shutter.controller.LiveViewConnectionState
+import com.sonytimer.shutter.controller.PtpEvent
+import com.sonytimer.shutter.controller.PtpTransportMode
 import com.sonytimer.shutter.controller.WifiCameraConfig
 import com.sonytimer.shutter.protocol.SonyPtpIpProtocol
 import kotlinx.coroutines.CancellationException
@@ -24,10 +27,14 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
@@ -41,6 +48,8 @@ import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
+import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -71,7 +80,7 @@ class AndroidSonyLiveViewController(
     private val clientGuidProvider: () -> ByteArray = {
         ByteArray(16).also { SecureRandom().nextBytes(it) }
     }
-) : CameraLiveViewController {
+) : CameraLiveViewController, AndroidPtpTransport {
 
     private data class LocalSubnet(
         val localIp: String,
@@ -106,6 +115,18 @@ class AndroidSonyLiveViewController(
     private val commandMutex = Mutex()
     private val lifecycleMutex = Mutex()
     private val sessionGeneration = AtomicInteger(0)
+    private val liveViewPaused = AtomicBoolean(false)
+    private val sdramAvailable = AtomicBoolean(false)
+
+    override val mode: PtpTransportMode = PtpTransportMode.WIFI_PTP_IP
+    override val isConnected: Boolean
+        get() = _connectionState.value is LiveViewConnectionState.Connected
+
+    private val _events = MutableSharedFlow<PtpEvent>(
+        extraBufferCapacity = 32,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    override val events: Flow<PtpEvent> = _events.asSharedFlow()
 
     private val _connectionState =
         MutableStateFlow<LiveViewConnectionState>(LiveViewConnectionState.Disconnected)
@@ -138,6 +159,13 @@ class AndroidSonyLiveViewController(
 
     private var transactionId = 1
     private var liveviewInitialized = false
+
+    override fun setLiveViewPaused(paused: Boolean) {
+        liveViewPaused.set(paused)
+        if (paused) {
+            _fps.value = 0
+        }
+    }
 
     override fun detectWifiGatewayIp(): String? {
         val cm = connectivityManager ?: return null
@@ -376,6 +404,194 @@ class AndroidSonyLiveViewController(
                     }
                 }
             }
+        }
+    }
+
+    override suspend fun listPhotos(maxItems: Int): Result<List<CameraPhotoItem>> = withContext(Dispatchers.IO) {
+        if (!isConnected) {
+            return@withContext Result.failure(IllegalStateException("Wi-Fi 相机未连接"))
+        }
+        runCatching {
+            commandMutex.withLock {
+                val (storageRc, storageBytes) = executeOperation(SonyPtpIpProtocol.OP_GET_STORAGE_IDS)
+                val storageIds = if (storageRc == SonyPtpIpProtocol.RC_OK) {
+                    SonyPtpIpProtocol.parseUInt32Array(storageBytes)
+                } else {
+                    intArrayOf()
+                }
+                val storagesToQuery = if (storageIds.isNotEmpty()) {
+                    storageIds
+                } else {
+                    intArrayOf(SonyPtpIpProtocol.STORAGE_ALL)
+                }
+
+                val collectedHandles = LinkedHashSet<Int>()
+                for (storageId in storagesToQuery) {
+                    val (jpgRc, jpgBytes) = executeOperation(
+                        SonyPtpIpProtocol.OP_GET_OBJECT_HANDLES,
+                        intArrayOf(storageId, SonyPtpIpProtocol.FORMAT_EXIF_JPEG, 0)
+                    )
+                    val jpgHandles = if (jpgRc == SonyPtpIpProtocol.RC_OK) {
+                        SonyPtpIpProtocol.parseUInt32Array(jpgBytes)
+                    } else {
+                        intArrayOf()
+                    }
+                    if (jpgHandles.isNotEmpty()) {
+                        for (h in jpgHandles) {
+                            if (h != SonyPtpIpProtocol.LIVEVIEW_HANDLE &&
+                                h != SonyPtpIpProtocol.SDRAM_IMAGE_HANDLE
+                            ) {
+                                collectedHandles.add(h)
+                            }
+                        }
+                    } else {
+                        val (allRc, allBytes) = executeOperation(
+                            SonyPtpIpProtocol.OP_GET_OBJECT_HANDLES,
+                            intArrayOf(storageId, SonyPtpIpProtocol.FORMAT_ALL, 0)
+                        )
+                        if (allRc == SonyPtpIpProtocol.RC_OK) {
+                            val allHandles = SonyPtpIpProtocol.parseUInt32Array(allBytes)
+                            for (h in allHandles) {
+                                if (h != SonyPtpIpProtocol.LIVEVIEW_HANDLE &&
+                                    h != SonyPtpIpProtocol.SDRAM_IMAGE_HANDLE
+                                ) {
+                                    collectedHandles.add(h)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                val items = ArrayList<CameraPhotoItem>()
+                // 若相机在内存直传模式下有最新拍的照片，优先置顶展示
+                if (sdramAvailable.get()) {
+                    val (sdramInfoRc, sdramInfoBytes) = executeOperation(
+                        SonyPtpIpProtocol.OP_GET_OBJECT_INFO,
+                        intArrayOf(SonyPtpIpProtocol.SDRAM_IMAGE_HANDLE)
+                    )
+                    if (sdramInfoRc == SonyPtpIpProtocol.RC_OK) {
+                        val info = SonyPtpIpProtocol.parseObjectInfo(sdramInfoBytes)
+                        items.add(
+                            CameraPhotoItem(
+                                handle = SonyPtpIpProtocol.SDRAM_IMAGE_HANDLE,
+                                transport = PtpTransportMode.WIFI_PTP_IP,
+                                filename = info?.filename.orEmpty(),
+                                formatCode = info?.objectFormat ?: SonyPtpIpProtocol.FORMAT_EXIF_JPEG,
+                                sizeBytes = info?.compressedSize ?: 0L,
+                                width = info?.imagePixWidth ?: 0,
+                                height = info?.imagePixHeight ?: 0,
+                                captureDate = info?.captureDate?.let(SonyPtpIpProtocol::formatCaptureDate).orEmpty(),
+                                isRaw = info != null && SonyPtpIpProtocol.isRawFormat(info.objectFormat, info.filename),
+                                isSdram = true,
+                                metadataLoaded = info != null
+                            )
+                        )
+                    }
+                }
+
+                // 句柄倒序（最新拍摄排在最前面），并延迟加载 ObjectInfo 与缩略图以实现毫秒级首屏
+                val reversed = collectedHandles.toList().asReversed().take(maxItems)
+                for (handle in reversed) {
+                    items.add(
+                        CameraPhotoItem(
+                            handle = handle,
+                            transport = PtpTransportMode.WIFI_PTP_IP,
+                            formatCode = SonyPtpIpProtocol.FORMAT_EXIF_JPEG,
+                            metadataLoaded = false
+                        )
+                    )
+                }
+                items
+            }
+        }
+    }
+
+    override suspend fun getObjectInfo(item: CameraPhotoItem): Result<CameraPhotoItem> = withContext(Dispatchers.IO) {
+        if (!isConnected) {
+            return@withContext Result.failure(IllegalStateException("Wi-Fi 相机未连接"))
+        }
+        runCatching {
+            commandMutex.withLock {
+                val (rc, bytes) = executeOperation(
+                    SonyPtpIpProtocol.OP_GET_OBJECT_INFO,
+                    intArrayOf(item.handle)
+                )
+                if (rc != SonyPtpIpProtocol.RC_OK) {
+                    throw IOException("获取照片信息失败 (0x${rc.toString(16).uppercase()})")
+                }
+                val info = SonyPtpIpProtocol.parseObjectInfo(bytes)
+                    ?: throw IOException("无法解析照片信息")
+                item.copy(
+                    filename = info.filename.ifBlank { item.filename },
+                    formatCode = info.objectFormat,
+                    sizeBytes = info.compressedSize,
+                    width = info.imagePixWidth,
+                    height = info.imagePixHeight,
+                    captureDate = SonyPtpIpProtocol.formatCaptureDate(info.captureDate),
+                    isRaw = SonyPtpIpProtocol.isRawFormat(info.objectFormat, info.filename),
+                    metadataLoaded = true
+                )
+            }
+        }
+    }
+
+    override suspend fun getThumbnailBytes(item: CameraPhotoItem): Result<ByteArray> = withContext(Dispatchers.IO) {
+        if (!isConnected) {
+            return@withContext Result.failure(IllegalStateException("Wi-Fi 相机未连接"))
+        }
+        runCatching {
+            commandMutex.withLock {
+                val (rc, bytes) = executeOperation(
+                    SonyPtpIpProtocol.OP_GET_THUMB,
+                    intArrayOf(item.handle)
+                )
+                if (rc != SonyPtpIpProtocol.RC_OK || bytes.isEmpty()) {
+                    throw IOException("获取缩略图失败 (0x${rc.toString(16).uppercase()})")
+                }
+                bytes
+            }
+        }
+    }
+
+    override suspend fun exportOriginalToFile(
+        item: CameraPhotoItem,
+        destFile: File,
+        onProgress: (bytesRead: Long, totalBytes: Long) -> Unit
+    ): Result<Long> = withContext(Dispatchers.IO) {
+        if (!isConnected) {
+            return@withContext Result.failure(IllegalStateException("Wi-Fi 相机未连接"))
+        }
+        runCatching {
+            commandMutex.withLock {
+                val sock = commandSocket
+                val prevTimeout = sock?.soTimeout ?: SOCKET_READ_TIMEOUT_MS
+                try {
+                    sock?.soTimeout = ORIGINAL_DOWNLOAD_READ_TIMEOUT_MS
+                    FileOutputStream(destFile).use { fos ->
+                        BufferedOutputStream(fos, STREAM_BUFFER_SIZE).use { bos ->
+                            val (rc, totalWritten) = executeOperationToStream(
+                                opCode = SonyPtpIpProtocol.OP_GET_OBJECT,
+                                params = intArrayOf(item.handle),
+                                outputStream = bos,
+                                expectedTotalHint = item.sizeBytes,
+                                onProgress = onProgress
+                            )
+                            bos.flush()
+                            if (rc != SonyPtpIpProtocol.RC_OK) {
+                                throw IOException("下载原图失败 (0x${rc.toString(16).uppercase()})")
+                            }
+                            if (totalWritten <= 0L) {
+                                throw IOException("相机返回了空图像数据")
+                            }
+                            totalWritten
+                        }
+                    }
+                } finally {
+                    runCatching { sock?.soTimeout = prevTimeout }
+                }
+            }
+        }.onFailure {
+            runCatching { if (destFile.exists()) destFile.delete() }
         }
     }
 
@@ -843,6 +1059,9 @@ class AndroidSonyLiveViewController(
                                 eOut.flush()
                             }
                             SonyPtpIpProtocol.PTPIP_PROBE_RESP -> Unit
+                            SonyPtpIpProtocol.PTPIP_EVENT -> {
+                                handleIncomingPtpEvent(pkt.body)
+                            }
                             else -> Unit
                         }
                         lastProbeSentAt = System.currentTimeMillis()
@@ -867,6 +1086,56 @@ class AndroidSonyLiveViewController(
         }
     }
 
+    private fun handleIncomingPtpEvent(body: ByteArray) {
+        val evt = SonyPtpIpProtocol.parseEventPacket(body) ?: return
+        when (evt.eventCode) {
+            SonyPtpIpProtocol.EVENT_OBJECT_ADDED -> {
+                val handle = evt.param1 ?: return
+                if (handle != SonyPtpIpProtocol.LIVEVIEW_HANDLE) {
+                    _events.tryEmit(
+                        PtpEvent.ObjectAdded(
+                            handle = handle,
+                            transport = PtpTransportMode.WIFI_PTP_IP,
+                            isSdram = handle == SonyPtpIpProtocol.SDRAM_IMAGE_HANDLE
+                        )
+                    )
+                }
+            }
+            SonyPtpIpProtocol.EVENT_SONY_OBJECT_ADDED_IN_SDRAM -> {
+                sdramAvailable.set(true)
+                _events.tryEmit(
+                    PtpEvent.ObjectAdded(
+                        handle = SonyPtpIpProtocol.SDRAM_IMAGE_HANDLE,
+                        transport = PtpTransportMode.WIFI_PTP_IP,
+                        isSdram = true
+                    )
+                )
+            }
+            SonyPtpIpProtocol.EVENT_SONY_OBJECT_REMOVED_IN_SDRAM -> {
+                sdramAvailable.set(false)
+                _events.tryEmit(
+                    PtpEvent.ObjectRemoved(
+                        handle = SonyPtpIpProtocol.SDRAM_IMAGE_HANDLE,
+                        transport = PtpTransportMode.WIFI_PTP_IP
+                    )
+                )
+            }
+            SonyPtpIpProtocol.EVENT_OBJECT_REMOVED -> {
+                val handle = evt.param1 ?: return
+                _events.tryEmit(
+                    PtpEvent.ObjectRemoved(
+                        handle = handle,
+                        transport = PtpTransportMode.WIFI_PTP_IP
+                    )
+                )
+            }
+            SonyPtpIpProtocol.EVENT_STORE_ADDED,
+            SonyPtpIpProtocol.EVENT_STORE_REMOVED -> {
+                _events.tryEmit(PtpEvent.StorageChanged(PtpTransportMode.WIFI_PTP_IP))
+            }
+        }
+    }
+
     private fun startLiveViewLoop(gen: Int) {
         liveViewLoopJob?.cancel()
         liveViewLoopJob = scope.launch {
@@ -875,8 +1144,15 @@ class AndroidSonyLiveViewController(
             var consecutiveErrors = 0
 
             while (isActive && sessionGeneration.get() == gen) {
+                if (liveViewPaused.get()) {
+                    delay(120L)
+                    continue
+                }
                 try {
                     val (rc, payload) = commandMutex.withLock {
+                        if (liveViewPaused.get()) {
+                            return@withLock SonyPtpIpProtocol.RC_DEVICE_BUSY to ByteArray(0)
+                        }
                         if (!liveviewInitialized) {
                             val (infoRc, _) = executeOperation(
                                 SonyPtpIpProtocol.OP_GET_OBJECT_INFO,
@@ -954,6 +1230,9 @@ class AndroidSonyLiveViewController(
                     sessionGeneration.incrementAndGet()
                     closeActiveResources()
                     _connectionState.value = LiveViewConnectionState.Error(message)
+                    _events.tryEmit(
+                        PtpEvent.TransportDisconnected(PtpTransportMode.WIFI_PTP_IP, message)
+                    )
                 }
             }
         }
@@ -1005,6 +1284,97 @@ class AndroidSonyLiveViewController(
                     val resp = SonyPtpIpProtocol.parseOperationResponse(pkt.body)
                     if (resp != null && resp.transactionId == txId) {
                         return resp.responseCode to (dataBuffer?.toByteArray() ?: ByteArray(0))
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 流式执行 PTP/IP 读取指令（用于下载 10~80MB 原图，不将整图一次性读入堆内存）。
+     */
+    private fun executeOperationToStream(
+        opCode: Int,
+        params: IntArray,
+        outputStream: OutputStream,
+        expectedTotalHint: Long,
+        onProgress: (bytesRead: Long, totalBytes: Long) -> Unit
+    ): Pair<Int, Long> {
+        val input = cmdIn ?: throw IOException("Command channel closed")
+        val output = cmdOut ?: throw IOException("Command channel closed")
+        val txId = transactionId++
+
+        output.write(SonyPtpIpProtocol.buildOperationRequest(opCode, txId, params))
+        output.flush()
+
+        val header = ByteArray(8)
+        val chunkBuf = ByteArray(STREAM_BUFFER_SIZE)
+        var totalExpected = expectedTotalHint.coerceAtLeast(0L)
+        var totalWritten = 0L
+
+        while (true) {
+            input.readFully(header)
+            val (length, type) = SonyPtpIpProtocol.parsePacketHeader(header)
+            if (length < 8 || length > MAX_STREAM_PACKET_SIZE_BYTES) {
+                throw IOException("无效的 PTP/IP 数据包长度: $length")
+            }
+            val bodyLen = length - 8
+
+            when (type) {
+                SonyPtpIpProtocol.PTPIP_DATA,
+                SonyPtpIpProtocol.PTPIP_END_DATA -> {
+                    if (bodyLen >= 4) {
+                        val txBuf = ByteArray(4)
+                        input.readFully(txBuf)
+                        val pktTxId = SonyPtpIpProtocol.readInt32Le(txBuf, 0)
+                        var remaining = bodyLen - 4
+                        while (remaining > 0) {
+                            val toRead = remaining.coerceAtMost(chunkBuf.size)
+                            input.readFully(chunkBuf, 0, toRead)
+                            if (pktTxId == txId) {
+                                outputStream.write(chunkBuf, 0, toRead)
+                                totalWritten += toRead
+                                onProgress(totalWritten, totalExpected)
+                            }
+                            remaining -= toRead
+                        }
+                    } else if (bodyLen > 0) {
+                        input.skipBytes(bodyLen)
+                    }
+                }
+                else -> {
+                    val body = ByteArray(bodyLen)
+                    if (bodyLen > 0) {
+                        input.readFully(body)
+                    }
+                    when (type) {
+                        SonyPtpIpProtocol.PTPIP_PROBE_REQ -> {
+                            output.write(SonyPtpIpProtocol.buildProbeResponse())
+                            output.flush()
+                        }
+                        SonyPtpIpProtocol.PTPIP_PROBE_RESP -> Unit
+                        SonyPtpIpProtocol.PTPIP_START_DATA -> {
+                            if (body.size >= 12 && SonyPtpIpProtocol.readInt32Le(body, 0) == txId) {
+                                val declaredLow = SonyPtpIpProtocol.readUInt32Le(body, 4)
+                                val declaredHigh = SonyPtpIpProtocol.readUInt32Le(body, 8)
+                                val declared = declaredLow or (declaredHigh shl 32)
+                                if (declared > 0L) {
+                                    totalExpected = declared
+                                    onProgress(0L, totalExpected)
+                                }
+                            }
+                        }
+                        SonyPtpIpProtocol.PTPIP_CANCEL -> {
+                            if (body.size >= 4 && SonyPtpIpProtocol.readInt32Le(body, 0) == txId) {
+                                throw IOException("相机取消了传输")
+                            }
+                        }
+                        SonyPtpIpProtocol.PTPIP_OPER_RESP -> {
+                            val resp = SonyPtpIpProtocol.parseOperationResponse(body)
+                            if (resp != null && resp.transactionId == txId) {
+                                return resp.responseCode to totalWritten
+                            }
+                        }
                     }
                 }
             }
@@ -1145,6 +1515,8 @@ class AndroidSonyLiveViewController(
         eventReaderJob = null
         closeSocketsAndSshQuietly()
         liveviewInitialized = false
+        sdramAvailable.set(false)
+        liveViewPaused.set(false)
         _latestFrame.value = null
         _fps.value = 0
     }
@@ -1195,10 +1567,13 @@ class AndroidSonyLiveViewController(
         const val PAIRING_CONFIRM_TIMEOUT_MS = 60_000
         const val SOCKET_CONNECT_TIMEOUT_MS = 4_000
         const val SOCKET_READ_TIMEOUT_MS = 5_000
+        const val ORIGINAL_DOWNLOAD_READ_TIMEOUT_MS = 30_000
         const val EVENT_SOCKET_READ_TIMEOUT_MS = 10_000
         const val SSH_CONNECT_TIMEOUT_MS = 10_000
         const val KEEPALIVE_INTERVAL_MS = 20_000L
         const val FRAME_INTERVAL_DELAY_MS = 15L
+        const val STREAM_BUFFER_SIZE = 32 * 1024
         const val MAX_PACKET_SIZE_BYTES = 10_000_000
+        const val MAX_STREAM_PACKET_SIZE_BYTES = 256 * 1024 * 1024
     }
 }

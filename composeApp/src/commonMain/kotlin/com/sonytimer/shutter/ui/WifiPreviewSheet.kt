@@ -54,6 +54,8 @@ fun WifiPreviewSheet(
     onAutoConnect: () -> Unit,
     onConnectManual: (WifiCameraConfig) -> Unit,
     onDisconnect: () -> Unit,
+    onOpenWifiGallery: () -> Unit = {},
+    onOpenUsbGallery: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -197,6 +199,31 @@ fun WifiPreviewSheet(
 
             // 主操作按钮
             if (!isBusy) {
+                if (isConnected) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(Color(0xFF065F46))
+                            .border(
+                                width = 1.dp,
+                                color = Color(0xFF34D399),
+                                shape = RoundedCornerShape(14.dp)
+                            )
+                            .clickable(onClick = onOpenWifiGallery)
+                            .padding(vertical = 14.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "查看相机图库（缩略图 / 下载原图）",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color.White
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
+
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -223,6 +250,31 @@ fun WifiPreviewSheet(
                         fontWeight = FontWeight.SemiBold,
                         color = Color.White
                     )
+                }
+
+                if (!isConnected) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(Color(0xFF1F242B))
+                            .border(
+                                width = 1.dp,
+                                color = Color(0xFF38BDF8).copy(alpha = 0.35f),
+                                shape = RoundedCornerShape(14.dp)
+                            )
+                            .clickable(onClick = onOpenUsbGallery)
+                            .padding(vertical = 12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "室外模式：USB 有线直连查看图库",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = Color(0xFFBAE6FD)
+                        )
+                    }
                 }
             }
 
