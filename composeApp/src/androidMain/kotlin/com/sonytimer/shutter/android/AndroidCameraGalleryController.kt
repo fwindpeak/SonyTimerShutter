@@ -11,8 +11,10 @@ import android.util.LruCache
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import com.sonytimer.shutter.controller.CameraGalleryController
+import com.sonytimer.shutter.controller.CameraPhotoAggregator
 import com.sonytimer.shutter.controller.CameraPhotoItem
 import com.sonytimer.shutter.controller.GalleryListResult
+import com.sonytimer.shutter.controller.PhotoDownloadMode
 import com.sonytimer.shutter.controller.PhotoThumbnailResult
 import com.sonytimer.shutter.controller.PtpEvent
 import com.sonytimer.shutter.controller.PtpTransportMode
@@ -37,10 +39,9 @@ import java.io.RandomAccessFile
 
 /**
  * Android 端统一相机图库控制器：
- * - 聚合 Wi-Fi PTP/IP 与 USB MTP 两个底层 [AndroidPtpTransport]
- * - 集成 [SonyArwParser]（移植自 fwindpeak/PhotoPicker），支持从索尼 RAW (.ARW) 中提取预览图与全尺寸 JPG
- * - 优先使用分块读取（GetPartialObject / SDIO_GetPartialLargeObject / MtpDevice.getPartialObject）
- *   直接定位并提取 ARW 内嵌全尺寸 JPG，大幅缩短传输时间
+ * - 网格预览阶段：合并同名 RAW+JPG 为单张卡片，仅拉取约 30KB 小缩略图，绝不拉取 40MB+ RAW；
+ * - 点开单图阶段：按需拉取高清 JPG 大图预览（纯 RAW 时通过分块读取仅提取内嵌 JPG 预览）；
+ * - 下载到手机阶段：由用户按需选择「仅 JPG」「RAW + JPG」或「仅 RAW」。
  */
 class AndroidCameraGalleryController(
     context: Context,
@@ -54,6 +55,7 @@ class AndroidCameraGalleryController(
     override val events: Flow<PtpEvent> = merge(wifiTransport.events, usbTransport.events)
 
     private val thumbnailCache = LruCache<String, ImageBitmap>(MAX_CACHED_THUMBNAILS)
+    private val largePreviewCache = LruCache<String, ImageBitmap>(MAX_CACHED_LARGE_PREVIEWS)
     private val metadataCache = LruCache<String, CameraPhotoItem>(MAX_CACHED_METADATA)
 
     override fun scanAndConnectUsb() {
@@ -71,11 +73,12 @@ class AndroidCameraGalleryController(
     override suspend fun listPhotos(mode: PtpTransportMode): Result<GalleryListResult> {
         val transport = resolveTransport(mode)
         return transport.listPhotos(maxItems = DEFAULT_MAX_PHOTOS).map { result ->
-            val mapped = result.photos.map { item ->
+            val withCache = result.photos.map { item ->
                 val cached = metadataCache.get(item.stableKey)
                 if (cached != null && !item.isSdram) cached else item
             }
-            result.copy(photos = mapped)
+            val merged = CameraPhotoAggregator.mergePairedRawAndJpg(withCache)
+            result.copy(photos = merged)
         }
     }
 
@@ -103,7 +106,7 @@ class AndroidCameraGalleryController(
                     }
                 }
 
-                // 若在延迟拉取 ObjectInfo 后发现该句柄是目录或非图片文件（如 MP4/XML），通知 UI 自动过滤
+                // 延迟拉取 ObjectInfo 后若发现是目录或非图片（如 MP4/XML），通知 UI 自动过滤
                 if (resolvedItem.metadataLoaded && !resolvedItem.isSdram) {
                     val isFolder = resolvedItem.formatCode == SonyPtpIpProtocol.FORMAT_ASSOCIATION
                     val isPhoto = SonyPtpIpProtocol.isImageFormat(
@@ -119,14 +122,19 @@ class AndroidCameraGalleryController(
                     }
                 }
 
-                // 1. 优先走标准 GetThumb（毫秒级，仅约 30KB）
+                // 1. 优先走标准 GetThumb（毫秒级，仅约 30KB，不拉原图与 RAW）
                 var bitmap = cachedThumb ?: transport.getThumbnailBytes(resolvedItem)
                     .getOrNull()
                     ?.let { bytes -> decodeSampledBitmap(bytes, maxDimension = MAX_THUMB_DIMENSION) }
 
-                // 2. 若 GetThumb 失败（如索尼 RAW / SDRAM 0xFFFFC001 照片），用 SonyArwParser 提取内嵌预览 JPG
+                // 2. 纯 RAW 或 SDRAM 若 GetThumb 失败，仅用分块读取提取内嵌小缩略图（不拉整张 RAW）
                 if (bitmap == null && (resolvedItem.isRaw || resolvedItem.isSdram)) {
-                    bitmap = extractEmbeddedPreviewBitmap(transport, resolvedItem, MAX_THUMB_DIMENSION)
+                    bitmap = extractEmbeddedPreviewBitmap(
+                        transport = transport,
+                        item = resolvedItem,
+                        maxDimension = MAX_THUMB_DIMENSION,
+                        preferSmallThumbnail = true
+                    )
                 }
 
                 if (bitmap != null && !resolvedItem.isSdram) {
@@ -137,15 +145,131 @@ class AndroidCameraGalleryController(
             }
         }
 
-    override suspend fun downloadOriginal(
+    override suspend fun loadLargePreview(item: CameraPhotoItem): Result<ImageBitmap> =
+        withContext(Dispatchers.IO) {
+            val cacheKey = item.stableKey
+            if (!item.isSdram) {
+                largePreviewCache.get(cacheKey)?.let { return@withContext Result.success(it) }
+            }
+
+            val transport = resolveTransport(item.transport)
+            runCatching {
+                val enriched = if (item.metadataLoaded) item else {
+                    transport.getObjectInfo(item).getOrDefault(item)
+                }
+
+                val bitmap: ImageBitmap? = if (!enriched.isRaw) {
+                    // JPG 或 RAW+JPG（主句柄为 JPG）：仅拉取 JPG 流解码高清大图，绝不碰 RAW
+                    val cacheDir = File(appContext.cacheDir, "camera_previews").apply { mkdirs() }
+                    val tempFile = File(cacheDir, "prev_${System.currentTimeMillis()}.jpg")
+                    try {
+                        transport.exportOriginalToFile(enriched, tempFile) { _, _ -> }.getOrThrow()
+                        decodeSampledBitmapFromFile(tempFile, MAX_PREVIEW_DIMENSION)
+                    } finally {
+                        runCatching { tempFile.delete() }
+                    }
+                } else {
+                    // 纯 RAW（无同名 JPG）：仅分块提取 ARW 内嵌的屏幕预览/全尺寸 JPG，不拉整张 40MB RAW
+                    extractEmbeddedPreviewBitmap(
+                        transport = transport,
+                        item = enriched,
+                        maxDimension = MAX_PREVIEW_DIMENSION,
+                        preferSmallThumbnail = false
+                    )
+                }
+
+                val result = bitmap ?: throw IOException("无法加载高清预览图")
+                if (!enriched.isSdram) {
+                    largePreviewCache.put(cacheKey, result)
+                }
+                result
+            }
+        }
+
+    override suspend fun downloadPhoto(
         item: CameraPhotoItem,
+        mode: PhotoDownloadMode,
         onProgress: (bytesRead: Long, totalBytes: Long) -> Unit
     ): Result<SavedPhotoResult> = withContext(Dispatchers.IO) {
+        when (mode) {
+            PhotoDownloadMode.JPG_ONLY -> {
+                if (item.isRaw) {
+                    extractRawFullJpegInternal(item, onProgress)
+                } else {
+                    downloadSingleFileInternal(item, onProgress)
+                }
+            }
+            PhotoDownloadMode.RAW_ONLY -> {
+                val rawItem = resolveRawTargetItem(item)
+                downloadSingleFileInternal(rawItem, onProgress)
+            }
+            PhotoDownloadMode.RAW_AND_JPG -> {
+                runCatching {
+                    val rawItem = resolveRawTargetItem(item)
+                    val jpgExpected = if (item.isRaw) 3_000_000L else item.sizeBytes.coerceAtLeast(1L)
+                    val rawExpected = rawItem.sizeBytes.coerceAtLeast(1L)
+                    val combinedTotal = jpgExpected + rawExpected
+
+                    // 第 1 步：保存 JPG（若为纯 RAW 则提取全尺寸 JPG）
+                    val jpgSaved = if (item.isRaw) {
+                        extractRawFullJpegInternal(item) { read, _ ->
+                            onProgress(read.coerceAtMost(jpgExpected), combinedTotal)
+                        }.getOrThrow()
+                    } else {
+                        downloadSingleFileInternal(item) { read, _ ->
+                            onProgress(read.coerceAtMost(jpgExpected), combinedTotal)
+                        }.getOrThrow()
+                    }
+
+                    // 第 2 步：保存 RAW (.ARW)
+                    val rawSaved = downloadSingleFileInternal(rawItem) { read, _ ->
+                        onProgress(jpgExpected + read, combinedTotal)
+                    }.getOrThrow()
+
+                    onProgress(combinedTotal, combinedTotal)
+                    SavedPhotoResult(
+                        filename = "${jpgSaved.filename} + ${rawSaved.filename}",
+                        displayPath = "${jpgSaved.displayPath} & ${rawSaved.displayPath}",
+                        sizeBytes = jpgSaved.sizeBytes + rawSaved.sizeBytes,
+                        previewBitmap = jpgSaved.previewBitmap ?: rawSaved.previewBitmap,
+                        isExtractedJpeg = jpgSaved.isExtractedJpeg,
+                        summaryLabel = "已保存 RAW + JPG ✓"
+                    )
+                }
+            }
+        }
+    }
+
+    override fun release() {
+        thumbnailCache.evictAll()
+        largePreviewCache.evictAll()
+        metadataCache.evictAll()
+        usbTransport.release()
+    }
+
+    private fun resolveRawTargetItem(item: CameraPhotoItem): CameraPhotoItem {
+        val pairedHandle = item.pairedRawHandle ?: return item
+        return item.copy(
+            handle = pairedHandle,
+            filename = item.pairedRawFilename.orEmpty(),
+            formatCode = SonyPtpIpProtocol.FORMAT_SONY_ARW,
+            sizeBytes = item.pairedRawSizeBytes,
+            isRaw = true,
+            pairedRawHandle = null,
+            pairedRawFilename = null,
+            pairedRawSizeBytes = 0L
+        )
+    }
+
+    private suspend fun downloadSingleFileInternal(
+        item: CameraPhotoItem,
+        onProgress: (bytesRead: Long, totalBytes: Long) -> Unit
+    ): Result<SavedPhotoResult> {
         val transport = resolveTransport(item.transport)
         val cacheDir = File(appContext.cacheDir, "camera_downloads").apply { mkdirs() }
         var tempFile: File? = null
 
-        runCatching {
+        return runCatching {
             val enrichedItem = if (item.metadataLoaded && item.filename.isNotBlank()) {
                 item
             } else {
@@ -174,23 +298,24 @@ class AndroidCameraGalleryController(
                 displayPath = displayPath,
                 sizeBytes = writtenBytes,
                 previewBitmap = previewBitmap,
-                isExtractedJpeg = false
+                isExtractedJpeg = false,
+                summaryLabel = if (enrichedItem.isRaw) "已保存 ARW ✓" else "已保存 JPG 原图 ✓"
             )
         }.also {
             runCatching { tempFile?.delete() }
         }
     }
 
-    override suspend fun extractRawFullJpeg(
+    private suspend fun extractRawFullJpegInternal(
         item: CameraPhotoItem,
         onProgress: (bytesRead: Long, totalBytes: Long) -> Unit
-    ): Result<SavedPhotoResult> = withContext(Dispatchers.IO) {
+    ): Result<SavedPhotoResult> {
         val transport = resolveTransport(item.transport)
         val cacheDir = File(appContext.cacheDir, "camera_downloads").apply { mkdirs() }
         var tempRawFile: File? = null
         var tempJpgFile: File? = null
 
-        runCatching {
+        return runCatching {
             val enrichedItem = if (item.metadataLoaded && item.filename.isNotBlank()) {
                 item
             } else {
@@ -201,7 +326,6 @@ class AndroidCameraGalleryController(
             tempJpgFile = File(cacheDir, "jpg_${System.currentTimeMillis()}_$jpgName")
             val outJpg = tempJpgFile!!
 
-            // 方案 A（极速）：通过分块读取仅拉取 ARW 头部 + 内嵌全尺寸 JPG 区间（省去 90% 流量）
             val extractedViaPartial = tryExtractFullJpegViaPartial(
                 transport = transport,
                 item = enrichedItem,
@@ -212,7 +336,6 @@ class AndroidCameraGalleryController(
             val jpgSize: Long = if (extractedViaPartial > 0L) {
                 extractedViaPartial
             } else {
-                // 方案 B（通用兜底）：完整拉取 ARW 到缓存，再用 SonyArwParser 本地提取全尺寸 JPG
                 tempRawFile = File(cacheDir, "raw_${System.currentTimeMillis()}.arw")
                 val rawFile = tempRawFile!!
                 transport.exportOriginalToFile(
@@ -232,7 +355,8 @@ class AndroidCameraGalleryController(
                 displayPath = displayPath,
                 sizeBytes = jpgSize,
                 previewBitmap = previewBitmap,
-                isExtractedJpeg = true
+                isExtractedJpeg = true,
+                summaryLabel = "已提取全尺寸 JPG ✓"
             )
         }.also {
             runCatching { tempRawFile?.delete() }
@@ -240,26 +364,25 @@ class AndroidCameraGalleryController(
         }
     }
 
-    override fun release() {
-        thumbnailCache.evictAll()
-        metadataCache.evictAll()
-        usbTransport.release()
-    }
-
     private suspend fun extractEmbeddedPreviewBitmap(
         transport: AndroidPtpTransport,
         item: CameraPhotoItem,
-        maxDimension: Int
+        maxDimension: Int,
+        preferSmallThumbnail: Boolean
     ): ImageBitmap? {
-        // 1. 优先尝试通过分块读取解析 ARW 内嵌缩略图 / 预览图
         if (item.sizeBytes > 0L) {
             val partialBytes = runCatching {
                 val reader = RemotePartialBinaryReader(item.sizeBytes) { offset, len ->
                     runBlocking { transport.readPartialObject(item, offset, len).getOrNull() }
                 }
                 val parsed = SonyArwParser(reader).parse(allowFallbackScan = false)
-                val target = parsed.thumbnail ?: parsed.preview ?: parsed.fullSize
-                if (target != null && target.length in 1_024L..6_000_000L) {
+                val target = if (preferSmallThumbnail) {
+                    parsed.thumbnail ?: parsed.preview
+                } else {
+                    parsed.preview ?: parsed.fullSize ?: parsed.thumbnail
+                }
+                val maxAllowed = if (preferSmallThumbnail) 2_000_000L else MAX_EXTRACTED_JPEG_BYTES
+                if (target != null && target.length in 1_024L..maxAllowed) {
                     readRangeViaPartial(transport, item, target.offset, target.length.toInt())
                 } else {
                     null
@@ -271,9 +394,9 @@ class AndroidCameraGalleryController(
             }
         }
 
-        // 2. 兜底（如 SDRAM 0xFFFFC001 不支持分块读时）：导出到临时文件后用 SonyArwParser 提取内嵌预览图
+        // 仅在点开大图且 SDRAM 不支持分块读时兜底导出解析
         if (item.isSdram) {
-            val cacheDir = File(appContext.cacheDir, "camera_downloads").apply { mkdirs() }
+            val cacheDir = File(appContext.cacheDir, "camera_previews").apply { mkdirs() }
             val tempFile = File(cacheDir, "sdram_preview_${System.currentTimeMillis()}.bin")
             try {
                 val exported = transport.exportOriginalToFile(item, tempFile) { _, _ -> }.isSuccess
@@ -525,9 +648,6 @@ class AndroidCameraGalleryController(
         return sample
     }
 
-    /**
-     * 本地文件随机访问读取器（带 32KB 页缓冲）。
-     */
     private class RandomAccessFileBinaryReader(file: File) : BinaryReader {
         private val raf = RandomAccessFile(file, "r")
         override val length: Long = file.length()
@@ -566,9 +686,6 @@ class AndroidCameraGalleryController(
         }
     }
 
-    /**
-     * 远程 PTP PartialObject 分页读取器（用于让 SonyArwParser 仅读取头部少量字节即定位全尺寸 JPG）。
-     */
     private class RemotePartialBinaryReader(
         override val length: Long,
         private val fetchBlock: (offset: Long, size: Int) -> ByteArray?
@@ -625,6 +742,7 @@ class AndroidCameraGalleryController(
         const val ALBUM_DIR_NAME = "SonyTimerShutter"
         const val DEFAULT_MAX_PHOTOS = 240
         const val MAX_CACHED_THUMBNAILS = 96
+        const val MAX_CACHED_LARGE_PREVIEWS = 10
         const val MAX_CACHED_METADATA = 300
         const val MAX_THUMB_DIMENSION = 480
         const val MAX_PREVIEW_DIMENSION = 2048

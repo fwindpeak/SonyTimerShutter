@@ -41,6 +41,8 @@ sealed interface PtpEvent {
 
 /**
  * 相机图库中的单张照片条目。
+ * 当存储卡内存在同名 RAW+JPG 时，合并为一张卡片：主句柄指向 JPG 用于极速预览，
+ * 同时记录配套 RAW 句柄，便于用户下载时按需选择「仅 JPG」或「RAW + JPG」。
  */
 data class CameraPhotoItem(
     val handle: Int,
@@ -53,15 +55,30 @@ data class CameraPhotoItem(
     val captureDate: String = "",
     val isRaw: Boolean = false,
     val isSdram: Boolean = false,
-    val metadataLoaded: Boolean = false
+    val metadataLoaded: Boolean = false,
+    val pairedRawHandle: Int? = null,
+    val pairedRawFilename: String? = null,
+    val pairedRawSizeBytes: Long = 0L
 ) {
     val stableKey: String
         get() = "${transport.name}_${handle}_${if (isSdram) "sdram" else "card"}"
+
+    val hasPairedRaw: Boolean
+        get() = pairedRawHandle != null
+
+    val hasDownloadChoices: Boolean
+        get() = hasPairedRaw || isRaw
 
     val displayName: String
         get() = filename.ifBlank {
             if (isSdram) "最新拍摄.JPG" else "IMG_${(handle and 0xFFFF).toString(16).uppercase()}"
         }
+}
+
+enum class PhotoDownloadMode {
+    JPG_ONLY,
+    RAW_AND_JPG,
+    RAW_ONLY
 }
 
 data class PhotoThumbnailResult(
@@ -80,7 +97,8 @@ data class SavedPhotoResult(
     val displayPath: String,
     val sizeBytes: Long,
     val previewBitmap: ImageBitmap? = null,
-    val isExtractedJpeg: Boolean = false
+    val isExtractedJpeg: Boolean = false,
+    val summaryLabel: String = filename
 )
 
 sealed interface UsbConnectionState {
@@ -117,12 +135,10 @@ interface CameraGalleryController {
 
     suspend fun listPhotos(mode: PtpTransportMode): Result<GalleryListResult>
     suspend fun loadThumbnail(item: CameraPhotoItem): Result<PhotoThumbnailResult>
-    suspend fun downloadOriginal(
+    suspend fun loadLargePreview(item: CameraPhotoItem): Result<ImageBitmap>
+    suspend fun downloadPhoto(
         item: CameraPhotoItem,
-        onProgress: (bytesRead: Long, totalBytes: Long) -> Unit = { _, _ -> }
-    ): Result<SavedPhotoResult>
-    suspend fun extractRawFullJpeg(
-        item: CameraPhotoItem,
+        mode: PhotoDownloadMode,
         onProgress: (bytesRead: Long, totalBytes: Long) -> Unit = { _, _ -> }
     ): Result<SavedPhotoResult>
 

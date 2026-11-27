@@ -28,6 +28,10 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -43,6 +47,7 @@ import androidx.compose.ui.unit.sp
 import com.sonytimer.shutter.controller.CameraPhotoItem
 import com.sonytimer.shutter.controller.GalleryDownloadProgress
 import com.sonytimer.shutter.controller.GalleryUiState
+import com.sonytimer.shutter.controller.PhotoDownloadMode
 import com.sonytimer.shutter.controller.PtpTransportMode
 import com.sonytimer.shutter.controller.SavedPhotoResult
 import com.sonytimer.shutter.controller.UsbConnectionState
@@ -57,8 +62,7 @@ fun CameraGalleryOverlay(
     onRefresh: () -> Unit,
     onRequestThumbnail: (CameraPhotoItem) -> Unit,
     onSelectPhoto: (CameraPhotoItem?) -> Unit,
-    onDownloadOriginal: (CameraPhotoItem) -> Unit,
-    onExtractRawJpeg: (CameraPhotoItem) -> Unit = {},
+    onDownloadPhoto: (CameraPhotoItem, PhotoDownloadMode) -> Unit,
     onDismiss: () -> Unit
 ) {
     val selectedIndex = galleryState.selectedPhotoKey?.let { key ->
@@ -261,16 +265,19 @@ fun CameraGalleryOverlay(
             }
         }
 
-        // 单图详情与原图下载浮层
+        // 单图详情与按需大图预览 + 下载格式选择浮层
         if (selectedPhoto != null) {
             val key = selectedPhoto.stableKey
             val savedInfo = galleryState.downloadedPhotos[key]
+            val largeBitmap = galleryState.largePreviews[key]
             val activeProgress = galleryState.downloadProgress?.takeIf { it.photoKey == key }
             PhotoDetailLightbox(
                 item = selectedPhoto,
                 index = selectedIndex,
                 totalCount = galleryState.photos.size,
-                previewBitmap = savedInfo?.previewBitmap ?: galleryState.thumbnails[key],
+                previewBitmap = savedInfo?.previewBitmap ?: largeBitmap ?: galleryState.thumbnails[key],
+                hasLargePreview = savedInfo?.previewBitmap != null || largeBitmap != null,
+                isLoadingLargePreview = galleryState.loadingLargePreviewKey == key,
                 savedResult = savedInfo,
                 downloadProgress = activeProgress,
                 anyDownloadBusy = galleryState.downloadProgress != null,
@@ -284,8 +291,7 @@ fun CameraGalleryOverlay(
                 } else {
                     null
                 },
-                onDownloadOriginal = { onDownloadOriginal(selectedPhoto) },
-                onExtractRawJpeg = { onExtractRawJpeg(selectedPhoto) },
+                onDownloadPhoto = { mode -> onDownloadPhoto(selectedPhoto, mode) },
                 onClose = { onSelectPhoto(null) }
             )
         }
@@ -427,9 +433,15 @@ private fun GalleryPhotoTile(
         }
 
         // 左上角格式 / 内存直传角标
-        if (item.isRaw || item.isSdram) {
+        val badgeText = when {
+            item.isSdram -> "实时"
+            item.hasPairedRaw -> "RAW+JPG"
+            item.isRaw -> "RAW"
+            else -> null
+        }
+        if (badgeText != null) {
             Text(
-                text = if (item.isSdram) "实时" else "RAW",
+                text = badgeText,
                 color = Color.White,
                 fontSize = 9.sp,
                 fontWeight = FontWeight.Bold,
@@ -439,8 +451,11 @@ private fun GalleryPhotoTile(
                     .padding(5.dp)
                     .clip(RoundedCornerShape(4.dp))
                     .background(
-                        if (item.isSdram) Color(0xFF2563EB).copy(alpha = 0.85f)
-                        else Color(0xFFD97706).copy(alpha = 0.88f)
+                        when {
+                            item.isSdram -> Color(0xFF2563EB).copy(alpha = 0.85f)
+                            item.hasPairedRaw -> Color(0xFF0F766E).copy(alpha = 0.88f)
+                            else -> Color(0xFFD97706).copy(alpha = 0.88f)
+                        }
                     )
                     .padding(horizontal = 5.dp, vertical = 2.dp)
             )
@@ -497,15 +512,18 @@ private fun PhotoDetailLightbox(
     index: Int,
     totalCount: Int,
     previewBitmap: ImageBitmap?,
+    hasLargePreview: Boolean,
+    isLoadingLargePreview: Boolean,
     savedResult: SavedPhotoResult?,
     downloadProgress: GalleryDownloadProgress?,
     anyDownloadBusy: Boolean,
     onPrev: (() -> Unit)?,
     onNext: (() -> Unit)?,
-    onDownloadOriginal: () -> Unit,
-    onExtractRawJpeg: () -> Unit,
+    onDownloadPhoto: (PhotoDownloadMode) -> Unit,
     onClose: () -> Unit
 ) {
+    var showDownloadChoices by remember(item.stableKey) { mutableStateOf(false) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -564,23 +582,41 @@ private fun PhotoDetailLightbox(
                 )
             }
 
-            if (savedResult == null && previewBitmap != null) {
-                Text(
-                    text = "缩略图预览",
-                    color = Color(0xFFE5E7EB),
-                    fontSize = 10.sp,
-                    fontFamily = FontFamily.Monospace,
+            val statusTag = when {
+                isLoadingLargePreview -> "正在加载高清 JPG..."
+                hasLargePreview -> "高清预览"
+                previewBitmap != null -> "缩略图"
+                else -> null
+            }
+            if (statusTag != null) {
+                Row(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .padding(8.dp)
                         .clip(RoundedCornerShape(999.dp))
-                        .background(Color.Black.copy(alpha = 0.6f))
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                )
+                        .background(Color.Black.copy(alpha = 0.62f))
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    if (isLoadingLargePreview) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(10.dp),
+                            strokeWidth = 1.6.dp,
+                            color = Color(0xFFFDE68A)
+                        )
+                    }
+                    Text(
+                        text = statusTag,
+                        color = if (hasLargePreview) Color(0xFF6EE7B7) else Color(0xFFE5E7EB),
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
             }
         }
 
-        // 底部元数据与下载原图操作区
+        // 底部元数据与下载操作区
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -598,16 +634,23 @@ private fun PhotoDetailLightbox(
                 val resText = if (item.width > 0 && item.height > 0) {
                     "${item.width}×${item.height}"
                 } else {
-                    "原图分辨率"
+                    if (item.hasPairedRaw) "RAW+JPG" else "原图"
                 }
-                val sizeText = SonyPtpIpProtocol.formatFileSize(
-                    savedResult?.sizeBytes ?: item.sizeBytes
-                )
+                val sizeText = if (item.hasPairedRaw && item.pairedRawSizeBytes > 0L) {
+                    "JPG ${SonyPtpIpProtocol.formatFileSize(item.sizeBytes)} · RAW ${
+                        SonyPtpIpProtocol.formatFileSize(item.pairedRawSizeBytes)
+                    }"
+                } else {
+                    SonyPtpIpProtocol.formatFileSize(savedResult?.sizeBytes ?: item.sizeBytes)
+                }
                 Text(
                     text = "$resText · $sizeText",
                     color = Color(0xFFD1D5DB),
-                    fontSize = 12.sp,
-                    fontFamily = FontFamily.Monospace
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
                 )
                 if (item.captureDate.isNotBlank()) {
                     Text(
@@ -629,9 +672,9 @@ private fun PhotoDetailLightbox(
                     ) {
                         Text(
                             text = if (downloadProgress.totalBytes > 0L) {
-                                "正在下载原图 $pct%"
+                                "正在下载到手机 $pct%"
                             } else {
-                                "正在下载原图..."
+                                "正在下载到手机..."
                             },
                             color = Color(0xFFFDE68A),
                             fontSize = 12.sp,
@@ -680,7 +723,59 @@ private fun PhotoDetailLightbox(
                 )
             }
 
-            // 上一张 / 主操作（RAW 优先提取全尺寸 JPG；JPG 直接下载原图） / 下一张
+            // 下载格式选择面板（仅在用户点击下载且该照片包含 RAW 时展开）
+            if (showDownloadChoices && !anyDownloadBusy && item.hasDownloadChoices) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xFF1D2229))
+                        .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "选择下载格式：",
+                        color = Color(0xFFD1D5DB),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        DownloadChoiceButton(
+                            title = if (item.isRaw) "仅 JPG（全尺寸提取）" else "仅下载 JPG",
+                            highlight = true,
+                            onClick = {
+                                showDownloadChoices = false
+                                onDownloadPhoto(PhotoDownloadMode.JPG_ONLY)
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                        DownloadChoiceButton(
+                            title = "下载 RAW + JPG",
+                            highlight = false,
+                            onClick = {
+                                showDownloadChoices = false
+                                onDownloadPhoto(PhotoDownloadMode.RAW_AND_JPG)
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    DownloadChoiceButton(
+                        title = "仅下载原始 RAW (.ARW)",
+                        highlight = false,
+                        onClick = {
+                            showDownloadChoices = false
+                            onDownloadPhoto(PhotoDownloadMode.RAW_ONLY)
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+
+            // 上一张 / 下载到手机 / 下一张
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -709,21 +804,25 @@ private fun PhotoDetailLightbox(
                         .background(buttonBg)
                         .border(1.dp, buttonBorder, RoundedCornerShape(12.dp))
                         .clickable(enabled = !anyDownloadBusy) {
-                            if (item.isRaw) onExtractRawJpeg() else onDownloadOriginal()
+                            if (item.hasDownloadChoices) {
+                                showDownloadChoices = !showDownloadChoices
+                            } else {
+                                onDownloadPhoto(PhotoDownloadMode.JPG_ONLY)
+                            }
                         }
                         .padding(vertical = 12.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
                         text = when {
-                            downloadProgress != null -> if (item.isRaw) "提取/下载中..." else "下载中..."
-                            item.isRaw && savedResult?.isExtractedJpeg == true -> "已提取全尺寸 JPG ✓"
-                            item.isRaw -> "提取全尺寸 JPG 到相册"
-                            savedResult != null -> "已保存原图 ✓（再次下载）"
-                            else -> "下载原图到相册"
+                            downloadProgress != null -> "下载中..."
+                            showDownloadChoices -> "收起格式选项"
+                            savedResult != null -> "${savedResult.summaryLabel}（再下载）"
+                            item.hasDownloadChoices -> "下载到手机（可选 RAW+JPG）"
+                            else -> "下载 JPG 原图"
                         },
                         color = Color.White,
-                        fontSize = 14.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                 }
@@ -734,28 +833,38 @@ private fun PhotoDetailLightbox(
                     onClick = { onNext?.invoke() }
                 )
             }
-
-            // RAW 格式额外提供下载原始 .ARW 文件按钮
-            if (item.isRaw) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(Color(0xFF1F242B))
-                        .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
-                        .clickable(enabled = !anyDownloadBusy) { onDownloadOriginal() }
-                        .padding(vertical = 9.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "下载原始 ARW 文件 (${SonyPtpIpProtocol.formatFileSize(item.sizeBytes)})",
-                        color = Color(0xFFD1D5DB),
-                        fontSize = 12.sp,
-                        fontFamily = FontFamily.Monospace
-                    )
-                }
-            }
         }
+    }
+}
+
+@Composable
+private fun DownloadChoiceButton(
+    title: String,
+    highlight: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (highlight) Color(0xFFB91C1C).copy(alpha = 0.85f) else Color(0xFF282E37))
+            .border(
+                1.dp,
+                if (highlight) Color(0xFFF87171) else Color.White.copy(alpha = 0.14f),
+                RoundedCornerShape(10.dp)
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 10.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = title,
+            color = Color.White,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
