@@ -33,5 +33,12 @@ interface CameraBleController {
      * Half Down (0x0107) -> Full Down (0x0109) -> Full Up (0x0108) -> Half Up (0x0106)
      */
     suspend fun triggerShutter(): Result<Unit>
+
+    /**
+     * 仅触发一次半按对焦（不释放快门）：
+     * Half Down (0x0107) -> 等待对焦 -> Half Up (0x0106)
+     */
+    suspend fun triggerFocus(): Result<Unit>
+
     fun release()
 }

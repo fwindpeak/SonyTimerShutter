@@ -498,6 +498,81 @@ class AndroidSonyBleController(
         )
     }
 
+    override suspend fun triggerFocus(): Result<Unit> {
+        if (_connectionState.value !is BleConnectionState.Connected) {
+            return Result.failure(IllegalStateException("未连接到索尼相机"))
+        }
+        if (activeGatt == null || commandCharacteristic == null) {
+            return Result.failure(IllegalStateException("蓝牙通道未就绪"))
+        }
+
+        val firstAttempt = executeFocusSequenceLocked()
+        if (firstAttempt is ShutterAttemptResult.Success) {
+            return Result.success(Unit)
+        }
+
+        val failed = firstAttempt as ShutterAttemptResult.Failure
+        val shouldAutoRecover = failed.step == ShutterStep.HALF_DOWN &&
+            cccdWriteTimedOut &&
+            failed.outcome.stage == "init" &&
+            (failed.outcome.code == SonyBleWritePolicy.STATUS_WRITE_REQUEST_BUSY || failed.outcome.code == null) &&
+            !skipCccdOnNextConnect
+
+        if (shouldAutoRecover) {
+            val device = lastConnectedDevice ?: activeGatt?.device
+            if (device != null && reconnectWithoutCccd(device)) {
+                val retryAttempt = executeFocusSequenceLocked()
+                if (retryAttempt is ShutterAttemptResult.Success) {
+                    return Result.success(Unit)
+                }
+                val retryFailed = retryAttempt as ShutterAttemptResult.Failure
+                return Result.failure(
+                    IllegalStateException(
+                        SonyBleWritePolicy.formatWriteFailureMessage(retryFailed.step.label, retryFailed.outcome)
+                    )
+                )
+            }
+        }
+
+        return Result.failure(
+            IllegalStateException(
+                SonyBleWritePolicy.formatWriteFailureMessage(failed.step.label, failed.outcome)
+            )
+        )
+    }
+
+    private suspend fun executeFocusSequenceLocked(): ShutterAttemptResult {
+        return writeMutex.withLock {
+            val focusWaiter = CompletableDeferred<Boolean>()
+            focusAcquiredSignal = focusWaiter
+            var halfPressed = false
+
+            try {
+                // 仅半按对焦 (0x01 0x07)，不触发全按快门
+                val halfOutcome = writePacketLocked(SonyBleProtocol.CMD_SHUTTER_HALF_DOWN)
+                if (halfOutcome is GattWriteOutcome.Failed) {
+                    Log.w(TAG, "Focus half-press write failed: $halfOutcome")
+                    return@withLock ShutterAttemptResult.Failure(ShutterStep.HALF_DOWN, halfOutcome)
+                }
+                halfPressed = true
+
+                // 等待相机 0xFF02 对焦完成回调，最长 750ms；若已合焦再短暂保持 180ms 方便确认
+                val acquired = withTimeoutOrNull(750L) { focusWaiter.await() } == true
+                if (acquired) {
+                    delay(180L)
+                }
+                ShutterAttemptResult.Success
+            } finally {
+                focusAcquiredSignal = null
+                withContext(NonCancellable) {
+                    if (halfPressed) {
+                        runCatching { writePacketLocked(SonyBleProtocol.CMD_SHUTTER_HALF_UP) }
+                    }
+                }
+            }
+        }
+    }
+
     private suspend fun executeShutterSequenceLocked(): ShutterAttemptResult {
         return writeMutex.withLock {
             val focusWaiter = CompletableDeferred<Boolean>()

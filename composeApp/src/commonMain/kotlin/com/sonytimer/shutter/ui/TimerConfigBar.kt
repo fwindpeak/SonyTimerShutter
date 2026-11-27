@@ -128,3 +128,74 @@ fun TimerConfigBar(
         )
     }
 }
+
+/**
+ * 底部独立对焦小按钮：仅触发半按对焦（不释放快门），用于拍照前预对焦
+ */
+@Composable
+fun FocusActionPill(
+    isFocusing: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val activeColor = Color(0xFF34D399)
+    val iconColor = (if (isFocusing) activeColor else Color(0xFFD1D5DB))
+        .copy(alpha = if (enabled || isFocusing) 1f else 0.45f)
+    val borderColor = if (isFocusing) {
+        activeColor.copy(alpha = 0.55f)
+    } else {
+        Color.White.copy(alpha = 0.10f)
+    }
+
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(
+                if (isFocusing) Color(0xFF132620).copy(alpha = 0.9f)
+                else Color(0xFF1C1F24).copy(alpha = if (enabled) 0.85f else 0.55f)
+            )
+            .border(1.dp, borderColor, RoundedCornerShape(999.dp))
+            .clickable(enabled = enabled && !isFocusing, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(7.dp)
+    ) {
+        // 矢量相机四角对焦框 + 中心合焦点图标
+        Canvas(modifier = Modifier.size(15.dp)) {
+            val w = size.width
+            val h = size.height
+            val sw = 1.5.dp.toPx()
+            val leg = w * 0.28f
+            val pad = w * 0.08f
+
+            // 左上角
+            drawLine(iconColor, Offset(pad, pad), Offset(pad + leg, pad), sw, StrokeCap.Round)
+            drawLine(iconColor, Offset(pad, pad), Offset(pad, pad + leg), sw, StrokeCap.Round)
+            // 右上角
+            drawLine(iconColor, Offset(w - pad, pad), Offset(w - pad - leg, pad), sw, StrokeCap.Round)
+            drawLine(iconColor, Offset(w - pad, pad), Offset(w - pad, pad + leg), sw, StrokeCap.Round)
+            // 左下角
+            drawLine(iconColor, Offset(pad, h - pad), Offset(pad + leg, h - pad), sw, StrokeCap.Round)
+            drawLine(iconColor, Offset(pad, h - pad), Offset(pad, h - pad - leg), sw, StrokeCap.Round)
+            // 右下角
+            drawLine(iconColor, Offset(w - pad, h - pad), Offset(w - pad - leg, h - pad), sw, StrokeCap.Round)
+            drawLine(iconColor, Offset(w - pad, h - pad), Offset(w - pad, h - pad - leg), sw, StrokeCap.Round)
+            // 中心对焦点
+            drawCircle(
+                color = iconColor,
+                radius = 1.8.dp.toPx(),
+                center = Offset(w * 0.5f, h * 0.5f)
+            )
+        }
+
+        Text(
+            text = if (isFocusing) "对焦中" else "对焦",
+            color = (if (isFocusing) Color(0xFF6EE7B7) else Color(0xFFE5E7EB))
+                .copy(alpha = if (enabled || isFocusing) 1f else 0.45f),
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium,
+            fontFamily = FontFamily.Monospace
+        )
+    }
+}

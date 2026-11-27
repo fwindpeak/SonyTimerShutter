@@ -218,7 +218,7 @@ fun TimerSettingsSheet(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "手环 / 蓝牙快门遥控",
+                            text = "手表 / 手环 / 蓝牙快门遥控",
                             fontSize = 15.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = Color(0xFFF3F4F6)
@@ -226,9 +226,9 @@ fun TimerSettingsSheet(
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
                             text = if (remoteTriggerEnabled) {
-                                "小米手环、蓝牙快门或音量键均可触发倒计时"
+                                "华为/小米手表手环、蓝牙快门或音量键均可触发倒计时"
                             } else {
-                                "开启后支持小米手环、蓝牙自拍杆或音量键触发倒计时"
+                                "开启后支持手表、手环、蓝牙自拍杆或音量键触发倒计时"
                             },
                             fontSize = 12.sp,
                             color = Color(0xFF9CA3AF)
@@ -264,16 +264,16 @@ fun TimerSettingsSheet(
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Text(
-                            text = "• 方式 1（遥控拍照）：手环通过小米运动健康开启蓝牙拍照后点击拍照",
-                            fontSize = 11.sp,
-                            lineHeight = 16.sp,
-                            color = Color(0xFFD1D5DB)
-                        )
-                        Text(
-                            text = "• 方式 2（音乐控制，鸿蒙推荐）：手环打开音乐控制，点播放/切歌/音量直接触发",
+                            text = "• 音乐控制（华为手表/手环、鸿蒙推荐）：在「运动健康」开启「控制手机音乐」，手表打开音乐控制点播放/切歌/调音量即可触发",
                             fontSize = 11.sp,
                             lineHeight = 16.sp,
                             color = Color(0xFFA7F3D0)
+                        )
+                        Text(
+                            text = "• 遥控拍照（小米手环 / 蓝牙自拍器）：开启蓝牙拍照后直接按键触发（华为手表「遥控拍照」仅限华为自带相机）",
+                            fontSize = 11.sp,
+                            lineHeight = 16.sp,
+                            color = Color(0xFFD1D5DB)
                         )
                     }
                 }

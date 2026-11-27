@@ -812,6 +812,42 @@ class AndroidSonyLiveViewController(
         }
     }
 
+    override suspend fun triggerFocus(): Result<Unit> = withContext(Dispatchers.IO) {
+        if (_connectionState.value !is LiveViewConnectionState.Connected) {
+            return@withContext Result.failure(IllegalStateException("Wi-Fi 预览未连接"))
+        }
+
+        runCatching {
+            commandMutex.withLock {
+                val s1DownCode = executeControlDevice(
+                    SonyPtpIpProtocol.CONTROL_SHUTTER_HALF_S1,
+                    SonyPtpIpProtocol.BUTTON_DOWN
+                )
+                if (s1DownCode != SonyPtpIpProtocol.RC_OK &&
+                    s1DownCode != SonyPtpIpProtocol.RC_DEVICE_BUSY
+                ) {
+                    throw IOException("半按对焦失败 (0x${s1DownCode.toString(16).uppercase()})")
+                }
+            }
+
+            // 在锁外保持短暂半按窗口，让实时预览继续流畅刷新并展示相机合焦框
+            try {
+                delay(650L)
+            } finally {
+                withContext(NonCancellable) {
+                    commandMutex.withLock {
+                        runCatching {
+                            executeControlDevice(
+                                SonyPtpIpProtocol.CONTROL_SHUTTER_HALF_S1,
+                                SonyPtpIpProtocol.BUTTON_UP
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     override fun release() {
         sessionGeneration.incrementAndGet()
         connectJob?.cancel()

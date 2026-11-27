@@ -109,7 +109,8 @@ data class ShutterUiState(
     val wifiConfig: WifiCameraConfig = WifiCameraConfig(),
     val detectedGatewayIp: String? = null,
     val remoteTriggerEnabled: Boolean = true,
-    val gallery: GalleryUiState = GalleryUiState()
+    val gallery: GalleryUiState = GalleryUiState(),
+    val isFocusing: Boolean = false
 ) {
     val isBleConnected: Boolean
         get() = connectionState is BleConnectionState.Connected
@@ -136,6 +137,7 @@ class ShutterTimerViewModel(
     private val preferences: TimerPreferences
 ) {
     private val phaseFlow = MutableStateFlow<ShutterPhase>(ShutterPhase.Idle)
+    private val isFocusingFlow = MutableStateFlow(false)
     private val configuredSecondsFlow = MutableStateFlow(
         preferences.getTimerSeconds(defaultValue = 5).coerceIn(MIN_TIMER_SECONDS, MAX_TIMER_SECONDS)
     )
@@ -172,6 +174,7 @@ class ShutterTimerViewModel(
     private val galleryFlow = MutableStateFlow(GalleryUiState())
 
     private var countdownJob: Job? = null
+    private var focusJob: Job? = null
     private var hintJob: Job? = null
     private var galleryListJob: Job? = null
     private var galleryDownloadJob: Job? = null
@@ -290,7 +293,8 @@ class ShutterTimerViewModel(
         showTimerSheetFlow,
         statusHintFlow,
         liveViewSnapshotFlow,
-        galleryFlow
+        galleryFlow,
+        isFocusingFlow
     ) { values ->
         val ble = values[0] as BleSnapshot
         val timer = values[1] as TimerConfigSnapshot
@@ -299,6 +303,7 @@ class ShutterTimerViewModel(
         val hint = values[4] as String?
         val lv = values[5] as LiveViewSnapshot
         val gallery = values[6] as GalleryUiState
+        val focusing = values[7] as Boolean
         ShutterUiState(
             connectionState = ble.connectionState,
             phase = phase,
@@ -319,7 +324,8 @@ class ShutterTimerViewModel(
             wifiConfig = lv.wifiConfig,
             detectedGatewayIp = lv.detectedGatewayIp,
             remoteTriggerEnabled = timer.remoteTriggerEnabled,
-            gallery = gallery
+            gallery = gallery,
+            isFocusing = focusing
         )
     }.stateIn(
         scope = scope,
@@ -362,6 +368,49 @@ class ShutterTimerViewModel(
         }
 
         startCountdown()
+    }
+
+    /**
+     * 独立半按对焦按钮：仅触发对焦，不释放快门，用于拍照前调整对焦。
+     */
+    fun onFocusClick() {
+        val currentPhase = phaseFlow.value
+        if (currentPhase is ShutterPhase.CountingDown || currentPhase is ShutterPhase.Triggering) {
+            return
+        }
+        if (isFocusingFlow.value) return
+
+        val wifiReady = liveViewController.connectionState.value is LiveViewConnectionState.Connected
+        val bleReady = bleController.connectionState.value is BleConnectionState.Connected
+        if (!wifiReady && !bleReady) {
+            feedbackPlayer.playMechanicalPress()
+            showTemporaryHint("请先连接索尼相机后再对焦")
+            openCameraPicker()
+            return
+        }
+
+        feedbackPlayer.playMechanicalPress()
+        focusJob?.cancel()
+        focusJob = scope.launch {
+            isFocusingFlow.value = true
+            try {
+                val result = when {
+                    liveViewController.connectionState.value is LiveViewConnectionState.Connected ->
+                        liveViewController.triggerFocus()
+                    bleController.connectionState.value is BleConnectionState.Connected ->
+                        bleController.triggerFocus()
+                    else -> Result.failure(IllegalStateException("相机连接已断开"))
+                }
+                if (result.isSuccess) {
+                    showTemporaryHint("对焦完成", durationMs = 1_600L)
+                } else {
+                    val reason = result.exceptionOrNull()?.message ?: "对焦失败，请检查相机遥控设置"
+                    showTemporaryHint(reason, durationMs = 3_000L)
+                }
+            } finally {
+                isFocusingFlow.value = false
+            }
+        }
     }
 
     /**
@@ -1002,6 +1051,7 @@ class ShutterTimerViewModel(
 
     fun onCleared() {
         countdownJob?.cancel()
+        focusJob?.cancel()
         hintJob?.cancel()
         galleryListJob?.cancel()
         galleryDownloadJob?.cancel()

@@ -41,5 +41,6 @@ interface CameraLiveViewController {
     fun disconnect()
     fun setLiveViewPaused(paused: Boolean) {}
     suspend fun triggerShutter(): Result<Unit>
+    suspend fun triggerFocus(): Result<Unit>
     fun release()
 }

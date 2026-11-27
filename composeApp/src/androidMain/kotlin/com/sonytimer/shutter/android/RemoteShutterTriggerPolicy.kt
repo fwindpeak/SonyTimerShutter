@@ -57,15 +57,42 @@ internal object RemoteShutterTriggerPolicy {
         }
     }
 
+    const val STREAM_MUSIC: Int = 3
+
+    fun shouldTriggerOnMusicVolumeChange(
+        streamType: Int,
+        newVolume: Int,
+        prevVolume: Int,
+        isSelfRestore: Boolean
+    ): Boolean {
+        if (isSelfRestore) return false
+        if (streamType != STREAM_MUSIC) return false
+        if (newVolume < 0 || prevVolume < 0) return false
+        return newVolume != prevVolume
+    }
+
+    /**
+     * 当手表/手环通过音乐控制调整媒体音量触发快门后，将音量恢复到触发前的值，
+     * 避免多次触发后顶到最大或静音导致无法继续变化。
+     */
+    fun computeRestoredVolume(
+        prevVolume: Int,
+        newVolume: Int,
+        maxVolume: Int
+    ): Int? {
+        if (maxVolume <= 1 || prevVolume < 0 || newVolume == prevVolume) return null
+        return prevVolume.coerceIn(1, maxVolume - 1)
+    }
+
     fun sourceLabelForKeyCode(keyCode: Int, isExternalDevice: Boolean): String {
-        if (isExternalDevice) return "手环/蓝牙遥控"
+        if (isExternalDevice) return "手表/手环遥控"
         return when (keyCode) {
             KEYCODE_HEADSETHOOK,
             KEYCODE_MEDIA_PLAY_PAUSE,
             KEYCODE_MEDIA_PLAY,
             KEYCODE_MEDIA_PAUSE,
             KEYCODE_MEDIA_NEXT,
-            KEYCODE_MEDIA_PREVIOUS -> "手环媒体控制"
+            KEYCODE_MEDIA_PREVIOUS -> "手表/手环媒体控制"
             KEYCODE_CAMERA -> "快门键"
             KEYCODE_VOLUME_UP,
             KEYCODE_VOLUME_DOWN -> "音量键"

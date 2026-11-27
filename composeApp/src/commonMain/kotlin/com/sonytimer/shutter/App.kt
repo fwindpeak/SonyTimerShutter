@@ -34,6 +34,7 @@ import com.sonytimer.shutter.controller.UsbConnectionState
 import com.sonytimer.shutter.ui.BluetoothStatusBar
 import com.sonytimer.shutter.ui.CameraGalleryOverlay
 import com.sonytimer.shutter.ui.CameraPickerSheet
+import com.sonytimer.shutter.ui.FocusActionPill
 import com.sonytimer.shutter.ui.GalleryStatusPill
 import com.sonytimer.shutter.ui.IndustrialMechanicalButton
 import com.sonytimer.shutter.ui.KeepScreenOnEffect
@@ -113,6 +114,7 @@ fun SonyTimerShutterApp(
                     BottomControls(
                         uiState = uiState,
                         onOpenTimerSheet = viewModel::openTimerSheet,
+                        onFocusClick = viewModel::onFocusClick,
                         modifier = Modifier.padding(bottom = 20.dp)
                     )
                 }
@@ -140,6 +142,7 @@ fun SonyTimerShutterApp(
                 BottomControls(
                     uiState = uiState,
                     onOpenTimerSheet = viewModel::openTimerSheet,
+                    onFocusClick = viewModel::onFocusClick,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .padding(bottom = 28.dp)
@@ -249,8 +252,12 @@ private fun TopStatusRow(
 private fun BottomControls(
     uiState: com.sonytimer.shutter.controller.ShutterUiState,
     onOpenTimerSheet: () -> Unit,
+    onFocusClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val idleControlsEnabled = uiState.phase !is ShutterPhase.CountingDown &&
+        uiState.phase !is ShutterPhase.Triggering
+
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -279,14 +286,24 @@ private fun BottomControls(
             }
         }
 
-        TimerConfigBar(
-            configuredSeconds = uiState.configuredSeconds,
-            burstEnabled = uiState.burstEnabled,
-            burstCount = uiState.burstCount,
-            burstIntervalSeconds = uiState.burstIntervalSeconds,
-            enabled = uiState.phase !is ShutterPhase.CountingDown &&
-                uiState.phase !is ShutterPhase.Triggering,
-            onClick = onOpenTimerSheet
-        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TimerConfigBar(
+                configuredSeconds = uiState.configuredSeconds,
+                burstEnabled = uiState.burstEnabled,
+                burstCount = uiState.burstCount,
+                burstIntervalSeconds = uiState.burstIntervalSeconds,
+                enabled = idleControlsEnabled,
+                onClick = onOpenTimerSheet
+            )
+
+            FocusActionPill(
+                isFocusing = uiState.isFocusing,
+                enabled = idleControlsEnabled,
+                onClick = onFocusClick
+            )
+        }
     }
 }

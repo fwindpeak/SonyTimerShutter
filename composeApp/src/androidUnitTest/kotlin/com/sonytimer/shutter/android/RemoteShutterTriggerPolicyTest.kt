@@ -87,11 +87,11 @@ class RemoteShutterTriggerPolicyTest {
     @Test
     fun sourceLabelForKeyCode_returnsClearLabels() {
         assertEquals(
-            "手环/蓝牙遥控",
+            "手表/手环遥控",
             RemoteShutterTriggerPolicy.sourceLabelForKeyCode(KEYCODE_VOLUME_UP, isExternalDevice = true)
         )
         assertEquals(
-            "手环媒体控制",
+            "手表/手环媒体控制",
             RemoteShutterTriggerPolicy.sourceLabelForKeyCode(KEYCODE_MEDIA_PLAY_PAUSE, isExternalDevice = false)
         )
         assertEquals(
@@ -102,5 +102,49 @@ class RemoteShutterTriggerPolicyTest {
             "音量键",
             RemoteShutterTriggerPolicy.sourceLabelForKeyCode(KEYCODE_VOLUME_DOWN, isExternalDevice = false)
         )
+    }
+
+    @Test
+    fun musicVolumeChangePolicy_triggersOnlyOnGenuineMusicStreamChanges() {
+        assertTrue(
+            RemoteShutterTriggerPolicy.shouldTriggerOnMusicVolumeChange(
+                streamType = RemoteShutterTriggerPolicy.STREAM_MUSIC,
+                newVolume = 6,
+                prevVolume = 5,
+                isSelfRestore = false
+            )
+        )
+        assertFalse(
+            RemoteShutterTriggerPolicy.shouldTriggerOnMusicVolumeChange(
+                streamType = RemoteShutterTriggerPolicy.STREAM_MUSIC,
+                newVolume = 5,
+                prevVolume = 5,
+                isSelfRestore = false
+            )
+        )
+        assertFalse(
+            RemoteShutterTriggerPolicy.shouldTriggerOnMusicVolumeChange(
+                streamType = RemoteShutterTriggerPolicy.STREAM_MUSIC,
+                newVolume = 5,
+                prevVolume = 6,
+                isSelfRestore = true
+            )
+        )
+        assertFalse(
+            RemoteShutterTriggerPolicy.shouldTriggerOnMusicVolumeChange(
+                streamType = 2, // STREAM_RING
+                newVolume = 4,
+                prevVolume = 3,
+                isSelfRestore = false
+            )
+        )
+    }
+
+    @Test
+    fun computeRestoredVolume_keepsVolumeWithinRepeatableRange() {
+        assertEquals(5, RemoteShutterTriggerPolicy.computeRestoredVolume(prevVolume = 5, newVolume = 6, maxVolume = 15))
+        assertEquals(1, RemoteShutterTriggerPolicy.computeRestoredVolume(prevVolume = 0, newVolume = 1, maxVolume = 15))
+        assertEquals(14, RemoteShutterTriggerPolicy.computeRestoredVolume(prevVolume = 15, newVolume = 14, maxVolume = 15))
+        assertEquals(null, RemoteShutterTriggerPolicy.computeRestoredVolume(prevVolume = 5, newVolume = 5, maxVolume = 15))
     }
 }
