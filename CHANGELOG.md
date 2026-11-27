@@ -2,6 +2,14 @@
 
 本文档记录 **SonyTimerShutter** 的主要版本更新内容，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [v1.3.1] - 2026-11-26
+
+### 修复与优化 (Fixed & Changed)
+- **修复相机图库仅显示单张新拍照片的问题**：升级索尼 PTP/IP 会话为优先双模式 `SDIO_OpenSession (0x9210)` + `SDIO_SetContentsTransferMode (0x9212)` 激活存储卡目录，并支持全格式（JPG / ARW / HEIF）对象枚举与根目录递归遍历兜底；USB MTP 同步支持全卡 JPG 与 RAW 识别并自动过滤目录和视频。
+- **同名 RAW+JPG 合并与按需分级预览**：相册网格自动将同名 `.JPG` 与 `.ARW` 合并为单张卡片（`RAW+JPG` 角标），列表浏览只拉约 30KB 缩略图，点开单张后再按需拉取高清 JPG 大图预览，绝不为了预览而拉取 40MB+ RAW。
+- **支持纯 RAW (.ARW) 预览与全尺寸 JPG 提取**：移植纯 Kotlin 零依赖 `SonyArwParser`，支持通过分块读取（`SDIO_GetPartialLargeObject` / `GetPartialObject` / `MtpDevice.getPartialObject`）直接解析 ARW 内嵌缩略图、预览图与全尺寸 JPG。
+- **下载格式按需选择**：保存含 RAW 的照片到手机时，可自由选择「仅下载 JPG（纯 RAW 自动提取全尺寸 JPG）」、「下载 RAW + JPG」或「仅下载原始 ARW」。
+
 ## [v1.3.0] - 2026-11-26
 
 ### 新增 (Added)
