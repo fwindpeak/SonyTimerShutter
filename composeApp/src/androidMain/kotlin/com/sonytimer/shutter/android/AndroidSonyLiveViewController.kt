@@ -14,6 +14,7 @@ import com.jcraft.jsch.UIKeyboardInteractive
 import com.jcraft.jsch.UserInfo
 import com.sonytimer.shutter.controller.CameraLiveViewController
 import com.sonytimer.shutter.controller.CameraPhotoItem
+import com.sonytimer.shutter.controller.GalleryListResult
 import com.sonytimer.shutter.controller.LiveViewConnectionState
 import com.sonytimer.shutter.controller.PtpEvent
 import com.sonytimer.shutter.controller.PtpTransportMode
@@ -117,6 +118,8 @@ class AndroidSonyLiveViewController(
     private val sessionGeneration = AtomicInteger(0)
     private val liveViewPaused = AtomicBoolean(false)
     private val sdramAvailable = AtomicBoolean(false)
+    private val contentsTransferActive = AtomicBoolean(false)
+    private val switchedToContentsSession = AtomicBoolean(false)
 
     override val mode: PtpTransportMode = PtpTransportMode.WIFI_PTP_IP
     override val isConnected: Boolean
@@ -164,6 +167,14 @@ class AndroidSonyLiveViewController(
         liveViewPaused.set(paused)
         if (paused) {
             _fps.value = 0
+        } else if (isConnected && (contentsTransferActive.get() || switchedToContentsSession.get())) {
+            scope.launch {
+                runCatching {
+                    commandMutex.withLock {
+                        exitContentsTransferModeLocked()
+                    }
+                }
+            }
         }
     }
 
@@ -407,63 +418,27 @@ class AndroidSonyLiveViewController(
         }
     }
 
-    override suspend fun listPhotos(maxItems: Int): Result<List<CameraPhotoItem>> = withContext(Dispatchers.IO) {
+    override suspend fun listPhotos(maxItems: Int): Result<GalleryListResult> = withContext(Dispatchers.IO) {
         if (!isConnected) {
             return@withContext Result.failure(IllegalStateException("Wi-Fi 相机未连接"))
         }
         runCatching {
             commandMutex.withLock {
-                val (storageRc, storageBytes) = executeOperation(SonyPtpIpProtocol.OP_GET_STORAGE_IDS)
-                val storageIds = if (storageRc == SonyPtpIpProtocol.RC_OK) {
-                    SonyPtpIpProtocol.parseUInt32Array(storageBytes)
+                // 尝试激活 Sony Contents Transfer 模式，使相机暴露存储卡（STORAGE_MEDIA_1: 0x00010001 等）
+                val realStorages = ensureContentsTransferActiveLocked()
+                val storagesToQuery = if (realStorages.isNotEmpty()) {
+                    realStorages
                 } else {
-                    intArrayOf()
-                }
-                val storagesToQuery = if (storageIds.isNotEmpty()) {
-                    storageIds
-                } else {
-                    intArrayOf(SonyPtpIpProtocol.STORAGE_ALL)
+                    queryStorageIdsLocked().filter { it != SonyPtpIpProtocol.STORAGE_REMOTE_DUMMY }
                 }
 
                 val collectedHandles = LinkedHashSet<Int>()
                 for (storageId in storagesToQuery) {
-                    val (jpgRc, jpgBytes) = executeOperation(
-                        SonyPtpIpProtocol.OP_GET_OBJECT_HANDLES,
-                        intArrayOf(storageId, SonyPtpIpProtocol.FORMAT_EXIF_JPEG, 0)
-                    )
-                    val jpgHandles = if (jpgRc == SonyPtpIpProtocol.RC_OK) {
-                        SonyPtpIpProtocol.parseUInt32Array(jpgBytes)
-                    } else {
-                        intArrayOf()
-                    }
-                    if (jpgHandles.isNotEmpty()) {
-                        for (h in jpgHandles) {
-                            if (h != SonyPtpIpProtocol.LIVEVIEW_HANDLE &&
-                                h != SonyPtpIpProtocol.SDRAM_IMAGE_HANDLE
-                            ) {
-                                collectedHandles.add(h)
-                            }
-                        }
-                    } else {
-                        val (allRc, allBytes) = executeOperation(
-                            SonyPtpIpProtocol.OP_GET_OBJECT_HANDLES,
-                            intArrayOf(storageId, SonyPtpIpProtocol.FORMAT_ALL, 0)
-                        )
-                        if (allRc == SonyPtpIpProtocol.RC_OK) {
-                            val allHandles = SonyPtpIpProtocol.parseUInt32Array(allBytes)
-                            for (h in allHandles) {
-                                if (h != SonyPtpIpProtocol.LIVEVIEW_HANDLE &&
-                                    h != SonyPtpIpProtocol.SDRAM_IMAGE_HANDLE
-                                ) {
-                                    collectedHandles.add(h)
-                                }
-                            }
-                        }
-                    }
+                    collectCardHandlesLocked(storageId, collectedHandles)
                 }
 
                 val items = ArrayList<CameraPhotoItem>()
-                // 若相机在内存直传模式下有最新拍的照片，优先置顶展示
+                // 若相机在内存直传模式下有刚拍的照片（0xFFFFC001），优先置顶展示
                 if (sdramAvailable.get()) {
                     val (sdramInfoRc, sdramInfoBytes) = executeOperation(
                         SonyPtpIpProtocol.OP_GET_OBJECT_INFO,
@@ -489,19 +464,25 @@ class AndroidSonyLiveViewController(
                     }
                 }
 
-                // 句柄倒序（最新拍摄排在最前面），并延迟加载 ObjectInfo 与缩略图以实现毫秒级首屏
+                // 句柄倒序（最新拍摄排在最前面），延迟按需拉取 ObjectInfo 与缩略图
                 val reversed = collectedHandles.toList().asReversed().take(maxItems)
                 for (handle in reversed) {
                     items.add(
                         CameraPhotoItem(
                             handle = handle,
                             transport = PtpTransportMode.WIFI_PTP_IP,
-                            formatCode = SonyPtpIpProtocol.FORMAT_EXIF_JPEG,
+                            formatCode = SonyPtpIpProtocol.FORMAT_ALL,
                             metadataLoaded = false
                         )
                     )
                 }
-                items
+
+                val notice = if (collectedHandles.isEmpty()) {
+                    "当前相机在 Wi-Fi「电脑遥控」模式下未向主机开放存储卡目录（仅可查看本次刚拍照片）。如需浏览卡内全部历史照片（含 RAW 全尺寸 JPG 预览），请用 Type-C 线连接并将相机 USB 模式设为「MTP」。"
+                } else {
+                    null
+                }
+                GalleryListResult(photos = items, notice = notice)
             }
         }
     }
@@ -553,6 +534,42 @@ class AndroidSonyLiveViewController(
         }
     }
 
+    override suspend fun readPartialObject(
+        item: CameraPhotoItem,
+        offset: Long,
+        maxBytes: Int
+    ): Result<ByteArray> = withContext(Dispatchers.IO) {
+        if (!isConnected) {
+            return@withContext Result.failure(IllegalStateException("Wi-Fi 相机未连接"))
+        }
+        runCatching {
+            commandMutex.withLock {
+                val offsetLow = (offset and 0xFFFFFFFFL).toInt()
+                val offsetHigh = ((offset ushr 32) and 0xFFFFFFFFL).toInt()
+                // 优先尝试 Sony 64-bit 偏移分块读取 SDIO_GetPartialLargeObject (0x9211)
+                val (largeRc, largeBytes) = executeOperation(
+                    SonyPtpIpProtocol.OP_SDIO_GET_PARTIAL_LARGE_OBJECT,
+                    intArrayOf(item.handle, offsetLow, offsetHigh, maxBytes)
+                )
+                if (largeRc == SonyPtpIpProtocol.RC_OK && largeBytes.isNotEmpty()) {
+                    return@withLock largeBytes
+                }
+
+                // 回退至标准 PTP GetPartialObject (0x101B)
+                if (offset <= 0xFFFFFFFFL) {
+                    val (stdRc, stdBytes) = executeOperation(
+                        SonyPtpIpProtocol.OP_GET_PARTIAL_OBJECT,
+                        intArrayOf(item.handle, offsetLow, maxBytes)
+                    )
+                    if (stdRc == SonyPtpIpProtocol.RC_OK && stdBytes.isNotEmpty()) {
+                        return@withLock stdBytes
+                    }
+                }
+                throw IOException("分块读取失败 (0x${largeRc.toString(16).uppercase()})")
+            }
+        }
+    }
+
     override suspend fun exportOriginalToFile(
         item: CameraPhotoItem,
         destFile: File,
@@ -592,6 +609,206 @@ class AndroidSonyLiveViewController(
             }
         }.onFailure {
             runCatching { if (destFile.exists()) destFile.delete() }
+        }
+    }
+
+    private fun queryStorageIdsLocked(): List<Int> {
+        val (storageRc, storageBytes) = executeOperation(SonyPtpIpProtocol.OP_GET_STORAGE_IDS)
+        if (storageRc != SonyPtpIpProtocol.RC_OK) return emptyList()
+        return SonyPtpIpProtocol.parseUInt32Array(storageBytes).toList()
+    }
+
+    /**
+     * 尝试让相机暴露真实存储卡（STORAGE_MEDIA_1 = 0x00010001 等）：
+     * 1. 若当前会话已暴露真实存储卡，直接返回；
+     * 2. 发送 SDIO_SetContentsTransferMode(HOST=2, ENABLE=1, 0) 激活主机选图；
+     * 3. 若仍未暴露真实存储卡，尝试 CloseSession -> SDIO_OpenSession(1, CONTENT_TRANSFER=1) -> SDIO_SetContentsTransferMode(2, 1, 0)；
+     *    若机身不支持（如纯 PC Remote 无媒体服务），立刻无缝恢复原 Remote 会话，不影响实时预览与快门。
+     */
+    private suspend fun ensureContentsTransferActiveLocked(): List<Int> {
+        val initialReal = queryStorageIdsLocked().filter { it != SonyPtpIpProtocol.STORAGE_REMOTE_DUMMY }
+        if (initialReal.isNotEmpty()) return initialReal
+
+        // 第 1 步：直接在当前会话尝试开启 Contents Transfer Mode（双模式会话下立即可用）
+        val (modeRc, _) = executeOperation(
+            SonyPtpIpProtocol.OP_SDIO_SET_CONTENTS_TRANSFER_MODE,
+            intArrayOf(
+                SonyPtpIpProtocol.CONTENTS_SELECT_HOST,
+                SonyPtpIpProtocol.TRANSFER_MODE_ENABLE,
+                0
+            )
+        )
+        if (modeRc == SonyPtpIpProtocol.RC_OK) {
+            contentsTransferActive.set(true)
+            delay(180L)
+            val afterEnable = queryStorageIdsLocked().filter { it != SonyPtpIpProtocol.STORAGE_REMOTE_DUMMY }
+            if (afterEnable.isNotEmpty()) return afterEnable
+        }
+
+        // 第 2 步：若当前是纯 Remote 会话，尝试无缝切换为 CONTENT_TRANSFER (0x1) 会话
+        if (!switchedToContentsSession.get()) {
+            executeOperation(SonyPtpIpProtocol.OP_CLOSE_SESSION)
+            delay(80L)
+            val (ctOpenRc, _) = executeOperation(
+                SonyPtpIpProtocol.OP_SDIO_OPEN_SESSION,
+                intArrayOf(1, SonyPtpIpProtocol.FUNCTION_MODE_CONTENTS_TRANSFER)
+            )
+            val ctOpened = ctOpenRc == SonyPtpIpProtocol.RC_OK ||
+                ctOpenRc == SonyPtpIpProtocol.RC_SESSION_ALREADY_OPEN_SONY ||
+                ctOpenRc == SonyPtpIpProtocol.RC_SESSION_ALREADY_OPEN_STD
+
+            if (ctOpened) {
+                switchedToContentsSession.set(true)
+                performSdioHandshakeLocked()
+                val (ctModeRc, _) = executeOperation(
+                    SonyPtpIpProtocol.OP_SDIO_SET_CONTENTS_TRANSFER_MODE,
+                    intArrayOf(
+                        SonyPtpIpProtocol.CONTENTS_SELECT_HOST,
+                        SonyPtpIpProtocol.TRANSFER_MODE_ENABLE,
+                        0
+                    )
+                )
+                if (ctModeRc == SonyPtpIpProtocol.RC_OK) {
+                    contentsTransferActive.set(true)
+                }
+                delay(200L)
+                val afterSwitch = queryStorageIdsLocked().filter { it != SonyPtpIpProtocol.STORAGE_REMOTE_DUMMY }
+                if (afterSwitch.isNotEmpty()) return afterSwitch
+
+                // 仍无真实存储卡（说明此 Wi-Fi 服务本身禁用媒体服务器），立刻切回 Remote 会话保持连接健康
+                exitContentsTransferModeLocked()
+            } else {
+                // 机身拒绝 SDIO_OpenSession(1, 1)，立即重新打开 Remote 会话
+                reopenRemoteSessionLocked()
+            }
+        }
+
+        return emptyList()
+    }
+
+    private suspend fun exitContentsTransferModeLocked() {
+        if (contentsTransferActive.compareAndSet(true, false)) {
+            runCatching {
+                executeOperation(
+                    SonyPtpIpProtocol.OP_SDIO_SET_CONTENTS_TRANSFER_MODE,
+                    intArrayOf(
+                        SonyPtpIpProtocol.CONTENTS_SELECT_HOST,
+                        SonyPtpIpProtocol.TRANSFER_MODE_DISABLE,
+                        0
+                    )
+                )
+            }
+        }
+        if (switchedToContentsSession.compareAndSet(true, false)) {
+            runCatching { executeOperation(SonyPtpIpProtocol.OP_CLOSE_SESSION) }
+            delay(80L)
+            reopenRemoteSessionLocked()
+        }
+        liveviewInitialized = false
+    }
+
+    private suspend fun reopenRemoteSessionLocked() {
+        val (dualRc, _) = executeOperation(
+            SonyPtpIpProtocol.OP_SDIO_OPEN_SESSION,
+            intArrayOf(1, SonyPtpIpProtocol.FUNCTION_MODE_REMOTE_AND_CONTENTS_TRANSFER)
+        )
+        val dualOk = dualRc == SonyPtpIpProtocol.RC_OK ||
+            dualRc == SonyPtpIpProtocol.RC_SESSION_ALREADY_OPEN_SONY ||
+            dualRc == SonyPtpIpProtocol.RC_SESSION_ALREADY_OPEN_STD
+        if (!dualOk) {
+            executeOperation(SonyPtpIpProtocol.OP_OPEN_SESSION, intArrayOf(1))
+        }
+        performSdioHandshakeLocked()
+        liveviewInitialized = false
+    }
+
+    private suspend fun performSdioHandshakeLocked() {
+        executeOperation(SonyPtpIpProtocol.OP_GET_DEVICE_INFO)
+        executeOperation(SonyPtpIpProtocol.OP_GET_STORAGE_IDS)
+        executeOperation(SonyPtpIpProtocol.OP_SDIO_CONNECT, intArrayOf(1, 0, 0))
+        executeOperation(SonyPtpIpProtocol.OP_SDIO_CONNECT, intArrayOf(2, 0, 0))
+        executeOperation(
+            SonyPtpIpProtocol.OP_SDIO_GET_EXT_DEVICE_INFO,
+            intArrayOf(SonyPtpIpProtocol.SDIO_PROTOCOL_VERSION, 0, 0)
+        )
+        executeOperation(SonyPtpIpProtocol.OP_SDIO_CONNECT, intArrayOf(3, 0, 0))
+        delay(20L)
+        executeOperation(
+            SonyPtpIpProtocol.OP_SDIO_GET_EXT_DEVICE_INFO,
+            intArrayOf(SonyPtpIpProtocol.SDIO_PROTOCOL_VERSION, 0, 0)
+        )
+    }
+
+    private fun collectCardHandlesLocked(storageId: Int, out: LinkedHashSet<Int>) {
+        // 1. 先按 FORMAT_ALL + ASSOCIATION_ALL 一次获取卡内全部对象（同时覆盖 JPG + ARW + HEIF）
+        val (allRc, allBytes) = executeOperation(
+            SonyPtpIpProtocol.OP_GET_OBJECT_HANDLES,
+            intArrayOf(storageId, SonyPtpIpProtocol.FORMAT_ALL, SonyPtpIpProtocol.ASSOCIATION_ALL)
+        )
+        if (allRc == SonyPtpIpProtocol.RC_OK) {
+            val handles = SonyPtpIpProtocol.parseUInt32Array(allBytes)
+            for (h in handles) {
+                if (h != SonyPtpIpProtocol.LIVEVIEW_HANDLE && h != SonyPtpIpProtocol.SDRAM_IMAGE_HANDLE) {
+                    out.add(h)
+                }
+            }
+            if (out.isNotEmpty()) return
+        }
+
+        // 2. 分别按常见照片格式查询（兼容部分机身不允许 FORMAT_ALL 的固件）
+        val formats = intArrayOf(
+            SonyPtpIpProtocol.FORMAT_EXIF_JPEG,
+            SonyPtpIpProtocol.FORMAT_SONY_ARW,
+            SonyPtpIpProtocol.FORMAT_HEIF
+        )
+        for (fmt in formats) {
+            val (rc, bytes) = executeOperation(
+                SonyPtpIpProtocol.OP_GET_OBJECT_HANDLES,
+                intArrayOf(storageId, fmt, SonyPtpIpProtocol.ASSOCIATION_ALL)
+            )
+            if (rc == SonyPtpIpProtocol.RC_OK) {
+                for (h in SonyPtpIpProtocol.parseUInt32Array(bytes)) {
+                    if (h != SonyPtpIpProtocol.LIVEVIEW_HANDLE && h != SonyPtpIpProtocol.SDRAM_IMAGE_HANDLE) {
+                        out.add(h)
+                    }
+                }
+            }
+        }
+        if (out.isNotEmpty()) return
+
+        // 3. 兜底：从根目录 ASSOCIATION_ROOT (0xFFFFFFFF) 递归遍历 DCIM / 100MSDCF 目录树
+        traverseFolderHandlesLocked(storageId, SonyPtpIpProtocol.ASSOCIATION_ROOT, depth = 0, out = out)
+    }
+
+    private fun traverseFolderHandlesLocked(
+        storageId: Int,
+        parentAssociation: Int,
+        depth: Int,
+        out: LinkedHashSet<Int>
+    ) {
+        if (depth > 3 || out.size >= 400) return
+        val (rc, bytes) = executeOperation(
+            SonyPtpIpProtocol.OP_GET_OBJECT_HANDLES,
+            intArrayOf(storageId, SonyPtpIpProtocol.FORMAT_ALL, parentAssociation)
+        )
+        if (rc != SonyPtpIpProtocol.RC_OK) return
+        val children = SonyPtpIpProtocol.parseUInt32Array(bytes)
+        for (child in children) {
+            if (child == SonyPtpIpProtocol.LIVEVIEW_HANDLE || child == SonyPtpIpProtocol.SDRAM_IMAGE_HANDLE) continue
+            val (infoRc, infoBytes) = executeOperation(
+                SonyPtpIpProtocol.OP_GET_OBJECT_INFO,
+                intArrayOf(child)
+            )
+            val info = if (infoRc == SonyPtpIpProtocol.RC_OK) {
+                SonyPtpIpProtocol.parseObjectInfo(infoBytes)
+            } else {
+                null
+            }
+            if (info?.objectFormat == SonyPtpIpProtocol.FORMAT_ASSOCIATION) {
+                traverseFolderHandlesLocked(storageId, child, depth + 1, out)
+            } else if (info == null || SonyPtpIpProtocol.isImageFormat(info.objectFormat, info.filename)) {
+                out.add(child)
+            }
         }
     }
 
@@ -1001,31 +1218,28 @@ class AndroidSonyLiveViewController(
         // 3. 启动事件通道读取与心跳保活
         startEventReader(gen, eIn, eOut)
 
-        // 4. OpenSession + Sony SDIO 握手序列
+        // 4. OpenSession + Sony SDIO 握手序列（优先尝试双模式 REMOTE_AND_CONTENTS_TRANSFER，失败回退标准 OpenSession）
         _connectionState.value = LiveViewConnectionState.Connecting("正在初始化相机画面...")
         commandMutex.withLock {
-            val (openRc, _) = executeOperation(SonyPtpIpProtocol.OP_OPEN_SESSION, intArrayOf(1))
-            if (openRc != SonyPtpIpProtocol.RC_OK &&
-                openRc != SonyPtpIpProtocol.RC_SESSION_ALREADY_OPEN_SONY &&
-                openRc != SonyPtpIpProtocol.RC_SESSION_ALREADY_OPEN_STD
-            ) {
-                throw IOException("打开相机会话失败 (0x${openRc.toString(16).uppercase()})")
+            val (dualRc, _) = executeOperation(
+                SonyPtpIpProtocol.OP_SDIO_OPEN_SESSION,
+                intArrayOf(1, SonyPtpIpProtocol.FUNCTION_MODE_REMOTE_AND_CONTENTS_TRANSFER)
+            )
+            val dualOpened = dualRc == SonyPtpIpProtocol.RC_OK ||
+                dualRc == SonyPtpIpProtocol.RC_SESSION_ALREADY_OPEN_SONY ||
+                dualRc == SonyPtpIpProtocol.RC_SESSION_ALREADY_OPEN_STD
+
+            if (!dualOpened) {
+                val (openRc, _) = executeOperation(SonyPtpIpProtocol.OP_OPEN_SESSION, intArrayOf(1))
+                if (openRc != SonyPtpIpProtocol.RC_OK &&
+                    openRc != SonyPtpIpProtocol.RC_SESSION_ALREADY_OPEN_SONY &&
+                    openRc != SonyPtpIpProtocol.RC_SESSION_ALREADY_OPEN_STD
+                ) {
+                    throw IOException("打开相机会话失败 (0x${openRc.toString(16).uppercase()})")
+                }
             }
 
-            executeOperation(SonyPtpIpProtocol.OP_GET_DEVICE_INFO)
-            executeOperation(SonyPtpIpProtocol.OP_GET_STORAGE_IDS)
-            executeOperation(SonyPtpIpProtocol.OP_SDIO_CONNECT, intArrayOf(1, 0, 0))
-            executeOperation(SonyPtpIpProtocol.OP_SDIO_CONNECT, intArrayOf(2, 0, 0))
-            executeOperation(
-                SonyPtpIpProtocol.OP_SDIO_GET_EXT_DEVICE_INFO,
-                intArrayOf(SonyPtpIpProtocol.SDIO_PROTOCOL_VERSION, 0, 0)
-            )
-            executeOperation(SonyPtpIpProtocol.OP_SDIO_CONNECT, intArrayOf(3, 0, 0))
-            delay(20L)
-            executeOperation(
-                SonyPtpIpProtocol.OP_SDIO_GET_EXT_DEVICE_INFO,
-                intArrayOf(SonyPtpIpProtocol.SDIO_PROTOCOL_VERSION, 0, 0)
-            )
+            performSdioHandshakeLocked()
 
             // 预初始化 LiveView 对象信息
             val (objInfoRc, _) = executeOperation(
@@ -1517,6 +1731,8 @@ class AndroidSonyLiveViewController(
         liveviewInitialized = false
         sdramAvailable.set(false)
         liveViewPaused.set(false)
+        contentsTransferActive.set(false)
+        switchedToContentsSession.set(false)
         _latestFrame.value = null
         _fps.value = 0
     }

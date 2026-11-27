@@ -55,6 +55,7 @@ data class GalleryUiState(
     val failedThumbKeys: Set<String> = emptySet(),
     val isLoadingList: Boolean = false,
     val errorMessage: String? = null,
+    val noticeMessage: String? = null,
     val selectedPhotoKey: String? = null,
     val downloadProgress: GalleryDownloadProgress? = null,
     val downloadedPhotos: Map<String, SavedPhotoResult> = emptyMap(),
@@ -724,17 +725,18 @@ class ShutterTimerViewModel(
         }
 
         galleryListJob?.cancel()
-        galleryFlow.update { it.copy(isLoadingList = true, errorMessage = null) }
+        galleryFlow.update { it.copy(isLoadingList = true, errorMessage = null, noticeMessage = null) }
         galleryListJob = scope.launch {
             val result = galleryController.listPhotos(mode)
             result.fold(
-                onSuccess = { list ->
+                onSuccess = { listResult ->
                     galleryFlow.update { state ->
                         if (state.activeTransport != mode) return@update state
                         state.copy(
-                            photos = list,
+                            photos = listResult.photos,
                             isLoadingList = false,
-                            errorMessage = null
+                            errorMessage = null,
+                            noticeMessage = listResult.notice
                         )
                     }
                 },
@@ -772,6 +774,13 @@ class ShutterTimerViewModel(
                 result.fold(
                     onSuccess = { loaded ->
                         galleryFlow.update { state ->
+                            if (loaded.shouldRemove) {
+                                return@update state.copy(
+                                    photos = state.photos.filterNot { it.stableKey == key },
+                                    loadingThumbKeys = state.loadingThumbKeys - key,
+                                    selectedPhotoKey = if (state.selectedPhotoKey == key) null else state.selectedPhotoKey
+                                )
+                            }
                             val updatedList = state.photos.map { existing ->
                                 if (existing.stableKey == key) loaded.updatedItem else existing
                             }
@@ -841,17 +850,75 @@ class ShutterTimerViewModel(
             result.fold(
                 onSuccess = { saved ->
                     galleryFlow.update { state ->
+                        val updatedThumbs = if (saved.previewBitmap != null && key !in state.thumbnails) {
+                            state.thumbnails + (key to saved.previewBitmap)
+                        } else {
+                            state.thumbnails
+                        }
                         state.copy(
                             downloadProgress = null,
+                            thumbnails = updatedThumbs,
                             downloadedPhotos = state.downloadedPhotos + (key to saved)
                         )
                     }
-                    showTemporaryHint("原图已保存到相册：${saved.filename}", durationMs = 3_200L)
+                    showTemporaryHint("原图已保存：${saved.filename}", durationMs = 3_200L)
                 },
                 onFailure = { err ->
                     galleryFlow.update { it.copy(downloadProgress = null) }
                     showTemporaryHint(
                         "原图下载失败：${err.message ?: "请检查连接状态"}",
+                        durationMs = 4_000L
+                    )
+                }
+            )
+        }
+    }
+
+    fun extractRawFullJpeg(item: CameraPhotoItem) {
+        if (galleryFlow.value.downloadProgress != null) return
+        val key = item.stableKey
+        galleryDownloadJob?.cancel()
+        galleryFlow.update {
+            it.copy(
+                downloadProgress = GalleryDownloadProgress(
+                    photoKey = key,
+                    bytesRead = 0L,
+                    totalBytes = 0L
+                )
+            )
+        }
+        galleryDownloadJob = scope.launch {
+            val result = galleryController.extractRawFullJpeg(item) { read, total ->
+                galleryFlow.update { state ->
+                    state.copy(
+                        downloadProgress = GalleryDownloadProgress(
+                            photoKey = key,
+                            bytesRead = read,
+                            totalBytes = total
+                        )
+                    )
+                }
+            }
+            result.fold(
+                onSuccess = { saved ->
+                    galleryFlow.update { state ->
+                        val updatedThumbs = if (saved.previewBitmap != null) {
+                            state.thumbnails + (key to saved.previewBitmap)
+                        } else {
+                            state.thumbnails
+                        }
+                        state.copy(
+                            downloadProgress = null,
+                            thumbnails = updatedThumbs,
+                            downloadedPhotos = state.downloadedPhotos + (key to saved)
+                        )
+                    }
+                    showTemporaryHint("已从 RAW 提取全尺寸 JPG：${saved.filename}", durationMs = 3_400L)
+                },
+                onFailure = { err ->
+                    galleryFlow.update { it.copy(downloadProgress = null) }
+                    showTemporaryHint(
+                        "提取全尺寸 JPG 失败：${err.message ?: "请检查连接状态"}",
                         durationMs = 4_000L
                     )
                 }

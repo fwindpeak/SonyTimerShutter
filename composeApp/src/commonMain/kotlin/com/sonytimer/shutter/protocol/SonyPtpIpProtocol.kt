@@ -35,22 +35,44 @@ object SonyPtpIpProtocol {
     // PTP Operation Codes
     const val OP_GET_DEVICE_INFO: Int = 0x1001
     const val OP_OPEN_SESSION: Int = 0x1002
+    const val OP_CLOSE_SESSION: Int = 0x1003
     const val OP_GET_STORAGE_IDS: Int = 0x1004
     const val OP_GET_OBJECT_HANDLES: Int = 0x1007
     const val OP_GET_OBJECT_INFO: Int = 0x1008
     const val OP_GET_OBJECT: Int = 0x1009
     const val OP_GET_THUMB: Int = 0x100A
+    const val OP_GET_PARTIAL_OBJECT: Int = 0x101B
     const val OP_SDIO_CONNECT: Int = 0x9201
     const val OP_SDIO_GET_EXT_DEVICE_INFO: Int = 0x9202
     const val OP_SDIO_CONTROL_DEVICE: Int = 0x9207
+    const val OP_SDIO_OPEN_SESSION: Int = 0x9210
+    const val OP_SDIO_GET_PARTIAL_LARGE_OBJECT: Int = 0x9211
+    const val OP_SDIO_SET_CONTENTS_TRANSFER_MODE: Int = 0x9212
+
+    // Sony SDIO_OpenSession FunctionMode values
+    const val FUNCTION_MODE_REMOTE: Int = 0x0
+    const val FUNCTION_MODE_CONTENTS_TRANSFER: Int = 0x1
+    const val FUNCTION_MODE_REMOTE_AND_CONTENTS_TRANSFER: Int = 0x2
+
+    // Sony SDIO_SetContentsTransferMode parameters
+    const val CONTENTS_SELECT_CAMERA: Int = 0x1
+    const val CONTENTS_SELECT_HOST: Int = 0x2
+    const val TRANSFER_MODE_DISABLE: Int = 0x0
+    const val TRANSFER_MODE_ENABLE: Int = 0x1
 
     const val SDIO_PROTOCOL_VERSION: Int = 0x012C
     const val SDRAM_IMAGE_HANDLE: Int = 0xFFFFC001.toInt()
     const val LIVEVIEW_HANDLE: Int = 0xFFFFC002.toInt()
     const val STORAGE_ALL: Int = 0xFFFFFFFF.toInt()
+    const val STORAGE_REMOTE_DUMMY: Int = 0x00010000
+    const val STORAGE_MEDIA_1: Int = 0x00010001
+    const val STORAGE_MEDIA_2: Int = 0x00010002
+    const val ASSOCIATION_ALL: Int = 0x00000000
+    const val ASSOCIATION_ROOT: Int = 0xFFFFFFFF.toInt()
 
     // PTP Object Format Codes
     const val FORMAT_ALL: Int = 0x0000
+    const val FORMAT_ASSOCIATION: Int = 0x3001
     const val FORMAT_EXIF_JPEG: Int = 0x3801
     const val FORMAT_JFIF: Int = 0x3808
     const val FORMAT_DNG: Int = 0x3811

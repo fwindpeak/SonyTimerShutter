@@ -203,6 +203,7 @@ fun SonyTimerShutterApp(
                     onRequestThumbnail = viewModel::requestThumbnail,
                     onSelectPhoto = viewModel::selectGalleryPhoto,
                     onDownloadOriginal = viewModel::downloadOriginalPhoto,
+                    onExtractRawJpeg = viewModel::extractRawFullJpeg,
                     onDismiss = viewModel::dismissGallery
                 )
             }

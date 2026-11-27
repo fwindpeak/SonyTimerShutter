@@ -16,6 +16,7 @@ import android.os.CancellationSignal
 import android.os.OperationCanceledException
 import androidx.core.content.ContextCompat
 import com.sonytimer.shutter.controller.CameraPhotoItem
+import com.sonytimer.shutter.controller.GalleryListResult
 import com.sonytimer.shutter.controller.PtpEvent
 import com.sonytimer.shutter.controller.PtpTransportMode
 import com.sonytimer.shutter.controller.UsbConnectionState
@@ -163,45 +164,90 @@ class AndroidUsbMtpTransport(
         }
     }
 
-    override suspend fun listPhotos(maxItems: Int): Result<List<CameraPhotoItem>> = withContext(Dispatchers.IO) {
+    override suspend fun listPhotos(maxItems: Int): Result<GalleryListResult> = withContext(Dispatchers.IO) {
         val device = mtpDevice ?: return@withContext Result.failure(IllegalStateException("USB 相机未连接"))
         runCatching {
             mtpMutex.withLock {
                 val storageIds = device.storageIds ?: intArrayOf()
                 if (storageIds.isEmpty()) {
-                    return@withLock emptyList()
+                    return@withLock GalleryListResult(
+                        photos = emptyList(),
+                        notice = "未检测到相机存储卡，请确认已插入存储卡且相机 USB 模式为「MTP」。"
+                    )
                 }
+
                 val collectedHandles = LinkedHashSet<Int>()
                 for (storageId in storageIds) {
-                    val jpegHandles = device.getObjectHandles(
-                        storageId,
-                        MtpConstants.FORMAT_EXIF_JPEG,
-                        0
-                    )
-                    if (jpegHandles != null && jpegHandles.isNotEmpty()) {
-                        for (h in jpegHandles) {
+                    // 同时拉取全格式对象（包含 JPG / ARW RAW / HEIF），避免仅拉 JPG 导致 RAW 不可见
+                    val allHandles = device.getObjectHandles(storageId, 0, 0)
+                    if (allHandles != null && allHandles.isNotEmpty()) {
+                        for (h in allHandles) {
                             collectedHandles.add(h)
                         }
                     } else {
-                        val allHandles = device.getObjectHandles(storageId, 0, 0)
-                        if (allHandles != null) {
-                            for (h in allHandles) {
+                        val jpegHandles = device.getObjectHandles(storageId, MtpConstants.FORMAT_EXIF_JPEG, 0)
+                        if (jpegHandles != null) {
+                            for (h in jpegHandles) {
+                                collectedHandles.add(h)
+                            }
+                        }
+                        val arwHandles = device.getObjectHandles(storageId, SonyPtpIpProtocol.FORMAT_SONY_ARW, 0)
+                        if (arwHandles != null) {
+                            for (h in arwHandles) {
                                 collectedHandles.add(h)
                             }
                         }
                     }
                 }
 
-                // 句柄倒序（最新拍摄排在最前面），延迟按需拉取缩略图
-                val newest = collectedHandles.toList().asReversed().take(maxItems)
-                newest.map { handle ->
-                    CameraPhotoItem(
-                        handle = handle,
-                        transport = PtpTransportMode.USB_MTP,
-                        formatCode = MtpConstants.FORMAT_EXIF_JPEG,
-                        metadataLoaded = false
-                    )
+                // 句柄倒序（最新拍摄排在最前面），并过滤掉目录（FORMAT_ASSOCIATION）与非图片文件
+                val items = ArrayList<CameraPhotoItem>()
+                for (handle in collectedHandles.toList().asReversed()) {
+                    if (items.size >= maxItems) break
+                    val info = runCatching { device.getObjectInfo(handle) }.getOrNull()
+                    if (info != null) {
+                        if (info.format == MtpConstants.FORMAT_ASSOCIATION) continue
+                        val name = info.name.orEmpty()
+                        if (!SonyPtpIpProtocol.isImageFormat(info.format, name)) continue
+                        val size = info.compressedSizeLong.takeIf { it > 0L } ?: info.compressedSize.toLong()
+                        val captureDate = when {
+                            info.dateCreated > 0L -> formatEpochMillis(info.dateCreated)
+                            info.dateModified > 0L -> formatEpochMillis(info.dateModified)
+                            else -> ""
+                        }
+                        items.add(
+                            CameraPhotoItem(
+                                handle = handle,
+                                transport = PtpTransportMode.USB_MTP,
+                                filename = name,
+                                formatCode = info.format,
+                                sizeBytes = size.coerceAtLeast(0L),
+                                width = info.imagePixWidth,
+                                height = info.imagePixHeight,
+                                captureDate = captureDate,
+                                isRaw = SonyPtpIpProtocol.isRawFormat(info.format, name),
+                                metadataLoaded = true
+                            )
+                        )
+                    } else {
+                        items.add(
+                            CameraPhotoItem(
+                                handle = handle,
+                                transport = PtpTransportMode.USB_MTP,
+                                formatCode = SonyPtpIpProtocol.FORMAT_ALL,
+                                metadataLoaded = false
+                            )
+                        )
+                    }
                 }
+
+                val isDummyOnly = storageIds.all { it == SonyPtpIpProtocol.STORAGE_REMOTE_DUMMY }
+                val notice = if (items.isEmpty() && isDummyOnly) {
+                    "当前 USB 连接处于「电脑遥控」模式，无法读取存储卡全部照片。请将相机 USB 连接模式切换为「MTP」后重新插拔数据线。"
+                } else {
+                    null
+                }
+                GalleryListResult(photos = items, notice = notice)
             }
         }
     }
@@ -244,6 +290,24 @@ class AndroidUsbMtpTransport(
                     throw IOException("该照片无内嵌缩略图")
                 }
                 bytes
+            }
+        }
+    }
+
+    override suspend fun readPartialObject(
+        item: CameraPhotoItem,
+        offset: Long,
+        maxBytes: Int
+    ): Result<ByteArray> = withContext(Dispatchers.IO) {
+        val device = mtpDevice ?: return@withContext Result.failure(IllegalStateException("USB 相机未连接"))
+        runCatching {
+            mtpMutex.withLock {
+                val buffer = ByteArray(maxBytes)
+                val read = device.getPartialObject(item.handle, offset, maxBytes.toLong(), buffer)
+                if (read <= 0L) {
+                    throw IOException("USB 分块读取返回空数据")
+                }
+                if (read.toInt() == buffer.size) buffer else buffer.copyOf(read.toInt())
             }
         }
     }

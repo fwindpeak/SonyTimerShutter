@@ -66,14 +66,21 @@ data class CameraPhotoItem(
 
 data class PhotoThumbnailResult(
     val updatedItem: CameraPhotoItem,
-    val thumbnail: ImageBitmap?
+    val thumbnail: ImageBitmap?,
+    val shouldRemove: Boolean = false
+)
+
+data class GalleryListResult(
+    val photos: List<CameraPhotoItem>,
+    val notice: String? = null
 )
 
 data class SavedPhotoResult(
     val filename: String,
     val displayPath: String,
     val sizeBytes: Long,
-    val previewBitmap: ImageBitmap? = null
+    val previewBitmap: ImageBitmap? = null,
+    val isExtractedJpeg: Boolean = false
 )
 
 sealed interface UsbConnectionState {
@@ -92,7 +99,7 @@ interface PtpTransport {
     val isConnected: Boolean
     val events: Flow<PtpEvent>
 
-    suspend fun listPhotos(maxItems: Int = 200): Result<List<CameraPhotoItem>>
+    suspend fun listPhotos(maxItems: Int = 200): Result<GalleryListResult>
     suspend fun getObjectInfo(item: CameraPhotoItem): Result<CameraPhotoItem>
     suspend fun getThumbnailBytes(item: CameraPhotoItem): Result<ByteArray>
 }
@@ -108,9 +115,13 @@ interface CameraGalleryController {
     fun disconnectUsb()
     fun setGalleryActive(active: Boolean)
 
-    suspend fun listPhotos(mode: PtpTransportMode): Result<List<CameraPhotoItem>>
+    suspend fun listPhotos(mode: PtpTransportMode): Result<GalleryListResult>
     suspend fun loadThumbnail(item: CameraPhotoItem): Result<PhotoThumbnailResult>
     suspend fun downloadOriginal(
+        item: CameraPhotoItem,
+        onProgress: (bytesRead: Long, totalBytes: Long) -> Unit = { _, _ -> }
+    ): Result<SavedPhotoResult>
+    suspend fun extractRawFullJpeg(
         item: CameraPhotoItem,
         onProgress: (bytesRead: Long, totalBytes: Long) -> Unit = { _, _ -> }
     ): Result<SavedPhotoResult>

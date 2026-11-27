@@ -6,10 +6,17 @@ import java.io.File
 
 /**
  * Android 端统一 PTP 传输层扩展接口：
- * 在 commonMain [PtpTransport] 基础上补充流式导出原图到本地文件，
- * 避免 20MB+ JPG 或 60MB+ ARW 原图一次性加载进 JVM 堆导致 OOM。
+ * - 支持分块读取（GetPartialObject / SDIO_GetPartialLargeObject / MtpDevice.getPartialObject），
+ *   使得 SonyArwParser 可以直接从 40MB+ RAW 文件中仅读取必要字节来定位并提取内嵌全尺寸 JPG。
+ * - 支持流式导出原图到本地文件，避免大文件一次性进入堆内存。
  */
 interface AndroidPtpTransport : PtpTransport {
+    suspend fun readPartialObject(
+        item: CameraPhotoItem,
+        offset: Long,
+        maxBytes: Int
+    ): Result<ByteArray>
+
     suspend fun exportOriginalToFile(
         item: CameraPhotoItem,
         destFile: File,

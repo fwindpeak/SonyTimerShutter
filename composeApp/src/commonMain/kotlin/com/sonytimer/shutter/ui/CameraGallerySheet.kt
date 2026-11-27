@@ -58,6 +58,7 @@ fun CameraGalleryOverlay(
     onRequestThumbnail: (CameraPhotoItem) -> Unit,
     onSelectPhoto: (CameraPhotoItem?) -> Unit,
     onDownloadOriginal: (CameraPhotoItem) -> Unit,
+    onExtractRawJpeg: (CameraPhotoItem) -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val selectedIndex = galleryState.selectedPhotoKey?.let { key ->
@@ -128,6 +129,40 @@ fun CameraGalleryOverlay(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 4.dp)
             )
+
+            // 协议能力提示条（例如 Wi-Fi 电脑遥控模式未开放存储卡目录时，提示可切 USB MTP）
+            val notice = galleryState.noticeMessage
+            if (!notice.isNullOrBlank() && !galleryState.isLoadingList) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xFF231D14))
+                        .border(1.dp, Color(0xFFF59E0B).copy(alpha = 0.45f), RoundedCornerShape(12.dp))
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = notice,
+                        color = Color(0xFFFDE68A),
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp
+                    )
+                    if (galleryState.activeTransport == PtpTransportMode.WIFI_PTP_IP) {
+                        Text(
+                            text = "切至 USB 有线图库 →",
+                            color = Color(0xFF93C5FD),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { onSwitchTransport(PtpTransportMode.USB_MTP) }
+                                .padding(vertical = 2.dp)
+                        )
+                    }
+                }
+            }
 
             // 主内容区
             Box(
@@ -250,6 +285,7 @@ fun CameraGalleryOverlay(
                     null
                 },
                 onDownloadOriginal = { onDownloadOriginal(selectedPhoto) },
+                onExtractRawJpeg = { onExtractRawJpeg(selectedPhoto) },
                 onClose = { onSelectPhoto(null) }
             )
         }
@@ -467,6 +503,7 @@ private fun PhotoDetailLightbox(
     onPrev: (() -> Unit)?,
     onNext: (() -> Unit)?,
     onDownloadOriginal: () -> Unit,
+    onExtractRawJpeg: () -> Unit,
     onClose: () -> Unit
 ) {
     Column(
@@ -643,7 +680,7 @@ private fun PhotoDetailLightbox(
                 )
             }
 
-            // 上一张 / 下载原图 / 下一张
+            // 上一张 / 主操作（RAW 优先提取全尺寸 JPG；JPG 直接下载原图） / 下一张
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -671,13 +708,17 @@ private fun PhotoDetailLightbox(
                         .clip(RoundedCornerShape(12.dp))
                         .background(buttonBg)
                         .border(1.dp, buttonBorder, RoundedCornerShape(12.dp))
-                        .clickable(enabled = !anyDownloadBusy) { onDownloadOriginal() }
+                        .clickable(enabled = !anyDownloadBusy) {
+                            if (item.isRaw) onExtractRawJpeg() else onDownloadOriginal()
+                        }
                         .padding(vertical = 12.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
                         text = when {
-                            downloadProgress != null -> "下载中..."
+                            downloadProgress != null -> if (item.isRaw) "提取/下载中..." else "下载中..."
+                            item.isRaw && savedResult?.isExtractedJpeg == true -> "已提取全尺寸 JPG ✓"
+                            item.isRaw -> "提取全尺寸 JPG 到相册"
                             savedResult != null -> "已保存原图 ✓（再次下载）"
                             else -> "下载原图到相册"
                         },
@@ -692,6 +733,27 @@ private fun PhotoDetailLightbox(
                     enabled = onNext != null,
                     onClick = { onNext?.invoke() }
                 )
+            }
+
+            // RAW 格式额外提供下载原始 .ARW 文件按钮
+            if (item.isRaw) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFF1F242B))
+                        .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
+                        .clickable(enabled = !anyDownloadBusy) { onDownloadOriginal() }
+                        .padding(vertical = 9.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "下载原始 ARW 文件 (${SonyPtpIpProtocol.formatFileSize(item.sizeBytes)})",
+                        color = Color(0xFFD1D5DB),
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
             }
         }
     }
